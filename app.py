@@ -82,6 +82,12 @@ selected_clinic = st.sidebar.selectbox(
     clinic_names,
     index=clinic_names.index(st.session_state.selected_clinic) if st.session_state.selected_clinic in clinic_names else 0
 )
+
+# Clear result when clinic changes
+if selected_clinic != st.session_state.selected_clinic:
+    st.session_state.last_result = None
+    st.session_state.last_response_time = 0
+
 st.session_state.selected_clinic = selected_clinic
 
 # Get current clinic data

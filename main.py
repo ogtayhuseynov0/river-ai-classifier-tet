@@ -47,36 +47,19 @@ class ConversationInput:
 # Prompt Template (Optimized - removed extra whitespace)
 # ============================================================================
 
-CLASSIFICATION_PROMPT = """You are an AI assistant that classifies customer conversations for a {clinic_type} called "{clinic_name}".
+CLASSIFICATION_PROMPT = """Classify this conversation for {clinic_type} "{clinic_name}".
 
-## Clinic Services:
+ONLY these services are offered:
 {formatted_services}
 
-## Classification Rules:
+LEAD - asking about OUR services listed above, pricing, appointments, or related health concerns
+NOT_LEAD - spam, wrong number, job seekers, OR asking about services WE DON'T OFFER
+NEEDS_INFO - too short/unclear (just "hi")
 
-**LEAD** - Mark as lead if the contact shows ANY of these signals:
-- Asking about services, treatments, or procedures
-- Inquiring about pricing or availability
-- Wanting to book or schedule an appointment
-- Asking about business hours or location
-- Expressing a health concern or need related to clinic services
-- Requesting a callback or more information
-
-**NOT_LEAD** - Mark as not lead if:
-- Spam, promotional content, or advertisements
-- Wrong number or misdirected messages
-- Job seekers or salespeople
-- Automated bot messages
-
-**NEEDS_INFO** - Mark as needs_info if:
-- Message is too short or unclear (e.g., just "hi")
-- Context is insufficient for classification
-
-## Conversation (Source: {source}):
+Conversation ({source}):
 {formatted_messages}
 
-Respond with valid JSON only:
-{{"classification": "lead" | "not_lead" | "needs_info", "confidence": 0.0-1.0, "reasoning": "brief explanation", "key_signals": ["signal1", "signal2"]}}"""
+JSON: {{"classification":"lead|not_lead|needs_info","confidence":0.0-1.0,"reasoning":"brief","key_signals":["signal"]}}"""
 
 
 # ============================================================================
@@ -235,6 +218,10 @@ class LeadClassifier:
         data = response.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         result = json.loads(text)
+
+        # Handle if model returns a list instead of dict
+        if isinstance(result, list):
+            result = result[0] if result else {}
 
         # Normalize classification to lowercase
         classification = result.get("classification", "needs_info").lower()
