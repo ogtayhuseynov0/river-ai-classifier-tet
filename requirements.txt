@@ -1,2 +1,4 @@
 aiohttp>=3.9.0
 python-dotenv>=1.0.0
+streamlit>=1.30.0
+nest-asyncio>=1.6.0

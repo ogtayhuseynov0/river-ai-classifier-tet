@@ -123,18 +123,6 @@ class LeadClassifier:
         self.model_name = model_name
         # Vertex AI endpoint
         self.base_url = "https://aiplatform.googleapis.com/v1/publishers/google/models"
-        self._session: Optional[aiohttp.ClientSession] = None
-
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session."""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
-        return self._session
-
-    async def close(self):
-        """Close the aiohttp session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
 
     def _format_messages(self, messages: list[dict]) -> str:
         """Format conversation messages for the prompt."""
@@ -200,21 +188,22 @@ class LeadClassifier:
             }
         }
 
-        # Call Vertex AI API
-        session = await self._get_session()
-        async with session.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"}
-        ) as response:
-            response.raise_for_status()
-            response_data = await response.json()
+        # Call Vertex AI API - create new session each time to avoid loop issues
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            ) as response:
+                response.raise_for_status()
+                response_data = await response.json()
 
         # Parse response
         text = response_data["candidates"][0]["content"]["parts"][0]["text"]
         result = json.loads(text)
 
-        classification = ClassificationType(result["classification"])
+        # Handle case-insensitive classification
+        classification = ClassificationType(result["classification"].lower())
 
         return ClassificationResult(
             classification=classification,
@@ -321,12 +310,12 @@ async def main():
         ),
     ]
 
-    try:
-        # Classify all conversations concurrently
-        print("=" * 60)
-        print("LEAD CLASSIFICATION RESULTS (ASYNC)")
-        print("=" * 60)
+    # Classify all conversations concurrently
+    print("=" * 60)
+    print("LEAD CLASSIFICATION RESULTS (ASYNC)")
+    print("=" * 60)
 
+    try:
         results = await classifier.classify_batch(examples)
 
         for conv, result in zip(examples, results):
@@ -342,9 +331,6 @@ async def main():
 
     except Exception as e:
         print(f"Error: {e}")
-
-    finally:
-        await classifier.close()
 
 
 if __name__ == "__main__":
