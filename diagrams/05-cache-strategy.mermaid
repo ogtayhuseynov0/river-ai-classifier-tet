@@ -1,0 +1,20 @@
+flowchart TB
+    REQ[New Message Request]
+    CHECK{Cache Exists?}
+    HIT[Cache Hit]
+    MISS[Cache Miss]
+    FETCH[Fetch from Supabase]
+    SET[SET with TTL 1h]
+    CLASSIFY[Vertex AI]
+    RESULT[Classification Result]
+    UPDATE[Update Cache]
+
+    REQ --> CHECK
+    CHECK -->|Yes| HIT
+    CHECK -->|No| MISS
+    MISS --> FETCH
+    FETCH --> SET
+    SET --> CLASSIFY
+    HIT --> CLASSIFY
+    CLASSIFY --> RESULT
+    RESULT --> UPDATE

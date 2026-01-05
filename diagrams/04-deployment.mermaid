@@ -1,0 +1,40 @@
+flowchart TB
+    subgraph GCP["Google Cloud Platform"]
+        subgraph CR["Cloud Run"]
+            API[ai-classifier-api]
+            WORKER[ai-classifier-worker]
+        end
+
+        subgraph CM["Cloud Memorystore"]
+            REDIS[(Redis Basic 1GB)]
+        end
+
+        subgraph VAI["Vertex AI"]
+            GEMINI[Gemini 1.5 Flash]
+        end
+
+        CB[Cloud Build]
+        SM[Secret Manager]
+        MON[Cloud Monitoring]
+        LOG[Cloud Logging]
+    end
+
+    subgraph External
+        SUPA[(Supabase)]
+        GH[GitHub]
+    end
+
+    GH -->|Push| CB
+    CB -->|Deploy| API
+    CB -->|Deploy| WORKER
+    API --> REDIS
+    WORKER --> REDIS
+    WORKER --> GEMINI
+    API --> SM
+    WORKER --> SM
+    API --> SUPA
+    WORKER --> SUPA
+    API --> MON
+    WORKER --> MON
+    API --> LOG
+    WORKER --> LOG

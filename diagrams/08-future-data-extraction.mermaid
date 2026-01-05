@@ -1,0 +1,36 @@
+flowchart TB
+    subgraph Input
+        CONV[Conversation]
+    end
+
+    subgraph Extraction
+        EXT[Entity Extractor]
+        VA3[Vertex AI]
+    end
+
+    subgraph Entities
+        NAME[Name]
+        PHONE[Phone]
+        EMAIL[Email]
+        INTENT[Intent]
+        TIME[Preferred Time]
+    end
+
+    subgraph Output
+        DB[(Supabase)]
+        CRM[CRM Sync]
+    end
+
+    CONV --> EXT
+    EXT --> VA3
+    VA3 --> NAME
+    VA3 --> PHONE
+    VA3 --> EMAIL
+    VA3 --> INTENT
+    VA3 --> TIME
+    NAME --> DB
+    PHONE --> DB
+    EMAIL --> DB
+    INTENT --> DB
+    TIME --> DB
+    DB --> CRM

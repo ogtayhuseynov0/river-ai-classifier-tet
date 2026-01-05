@@ -1,0 +1,19 @@
+flowchart TB
+    JOB[Classification Job]
+    PROCESS[Process Job]
+    ACK[Acknowledge]
+    RETRY{Retry Count < 3?}
+    DLQ[Dead Letter Queue]
+    BACKOFF[Exponential Backoff]
+    ALERT[Alert Team]
+    LOG[Log Error Details]
+
+    JOB --> PROCESS
+    PROCESS -->|Success| ACK
+    PROCESS -->|Transient Error| RETRY
+    PROCESS -->|Permanent Error| DLQ
+    RETRY -->|Yes| BACKOFF
+    RETRY -->|No| DLQ
+    BACKOFF --> PROCESS
+    DLQ --> ALERT
+    DLQ --> LOG

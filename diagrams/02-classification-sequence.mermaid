@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    participant S as Supabase
+    participant A as API Service
+    participant Q as Redis Queue
+    participant C as Redis Cache
+    participant W as Worker
+    participant V as Vertex AI
+
+    Note over S: New message arrives in conversation
+
+    S->>A: Webhook: New message
+    A->>A: Validate webhook signature
+    A->>Q: Add job with debounce 2s
+    Q-->>A: Job ID
+    A-->>S: 202 Accepted
+
+    Note over Q: Debounce: Wait 2s for more messages
+
+    Q->>W: Process job
+    W->>C: Get conversation context
+
+    alt Cache Hit
+        C-->>W: Return cached messages
+    else Cache Miss
+        W->>S: Fetch conversation history
+        S-->>W: Message history
+        W->>C: Cache with TTL 1h
+    end
+
+    W->>W: Build classification prompt
+    W->>V: Classify conversation
+    V-->>W: Classification result
+
+    par Parallel Updates
+        W->>C: Update cache
+        W->>S: Update conversations table
+        W->>S: Insert classification history
+    end
+
+    W->>Q: ACK job complete
+
+    Note over S: Conversation now has AI classification

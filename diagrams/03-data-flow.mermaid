@@ -1,0 +1,39 @@
+flowchart LR
+    subgraph "Data Sources"
+        IG[Instagram]
+        WA[WhatsApp]
+        TT[TikTok]
+        FB[Facebook]
+        EM[Email]
+    end
+
+    subgraph "Existing Platform"
+        UI[Unified Inbox]
+        DB[(Supabase)]
+    end
+
+    subgraph "AI Classifier"
+        CL[Classifier]
+        CA[Cache]
+    end
+
+    subgraph "Output"
+        LEAD[Lead]
+        SPAM[Spam]
+        INFO[Info Needed]
+    end
+
+    IG --> UI
+    WA --> UI
+    TT --> UI
+    FB --> UI
+    EM --> UI
+    UI --> DB
+    DB -->|Webhook| CL
+    CL <-->|Context| CA
+    CL --> LEAD
+    CL --> SPAM
+    CL --> INFO
+    LEAD --> DB
+    SPAM --> DB
+    INFO --> DB

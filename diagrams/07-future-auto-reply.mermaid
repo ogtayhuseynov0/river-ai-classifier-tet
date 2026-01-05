@@ -1,0 +1,28 @@
+flowchart LR
+    subgraph Classification
+        CL[Classifier]
+        RES[Classification Result]
+    end
+
+    subgraph Reply["Reply Generation"]
+        RG[Reply Generator]
+        VA2[Vertex AI]
+    end
+
+    subgraph Storage
+        DB[(Supabase)]
+        SR[Suggested Replies]
+    end
+
+    subgraph UI
+        INBOX[Doctor Inbox]
+        SEND[Send Reply]
+    end
+
+    CL --> RES
+    RES -->|If Lead| RG
+    RG --> VA2
+    VA2 --> SR
+    SR --> DB
+    DB --> INBOX
+    INBOX -->|Doctor selects| SEND

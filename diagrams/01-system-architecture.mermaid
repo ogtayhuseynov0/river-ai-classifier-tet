@@ -1,0 +1,48 @@
+flowchart TB
+    subgraph "Existing Platform"
+        SP[(Supabase DB)]
+        WH[Database Webhook]
+    end
+
+    subgraph "AI Classifier Service"
+        subgraph "Cloud Run - API"
+            API[FastAPI Webhook Receiver]
+            CE[Classification Endpoint]
+        end
+
+        subgraph "Cloud Memorystore"
+            RQ[Redis Queue BullMQ]
+            RC[Redis Cache Conversation Context]
+        end
+
+        subgraph "Cloud Run - Worker"
+            W[Queue Worker]
+            JP[Job Processor]
+            CL[Classifier Service]
+        end
+    end
+
+    subgraph "Google Cloud AI"
+        VA[Vertex AI Gemini 1.5 Flash]
+    end
+
+    SP -->|New Message Event| WH
+    WH -->|POST /webhooks/supabase| API
+    API -->|Add Job| RQ
+    RQ -->|Pull Job| W
+    W -->|Check Cache| RC
+    RC -.->|Cache Miss| SP
+    W --> JP
+    JP --> CL
+    CL -->|Classify| VA
+    VA -->|Result| CL
+    CL -->|Update Cache| RC
+    CL -->|Write Result| SP
+    CE -->|Manual Classify| CL
+
+    style SP fill:#3ECF8E,color:#000
+    style VA fill:#4285F4,color:#fff
+    style RQ fill:#DC382D,color:#fff
+    style RC fill:#DC382D,color:#fff
+    style API fill:#009688,color:#fff
+    style W fill:#009688,color:#fff
