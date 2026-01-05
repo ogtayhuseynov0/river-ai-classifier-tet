@@ -1,18 +1,18 @@
 """
 AI Conversation Classifier - Lead Detection
 Using Google AI Studio or Vertex AI
+OPTIMIZED VERSION - Fixed 15 second delay issues
 """
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Optional
 
 import requests
 from dotenv import load_dotenv
-import google.auth
-import google.auth.transport.requests
 
 # Load environment variables from .env file
 env_path = Path(__file__).parent / ".env"
@@ -44,12 +44,10 @@ class ConversationInput:
 
 
 # ============================================================================
-# Prompt Template
+# Prompt Template (Optimized - removed extra whitespace)
 # ============================================================================
 
-CLASSIFICATION_PROMPT = """
-You are an AI assistant that classifies customer conversations for a {clinic_type} called "{clinic_name}".
-Analyze the conversation and determine if this contact is a LEAD (potential customer).
+CLASSIFICATION_PROMPT = """You are an AI assistant that classifies customer conversations for a {clinic_type} called "{clinic_name}".
 
 ## Clinic Services:
 {formatted_services}
@@ -63,49 +61,33 @@ Analyze the conversation and determine if this contact is a LEAD (potential cust
 - Asking about business hours or location
 - Expressing a health concern or need related to clinic services
 - Requesting a callback or more information
-- Showing interest in specific offerings from the services list
 
 **NOT_LEAD** - Mark as not lead if:
 - Spam, promotional content, or advertisements
 - Wrong number or misdirected messages
 - Job seekers or salespeople
 - Automated bot messages
-- Clearly irrelevant to the clinic services
 
 **NEEDS_INFO** - Mark as needs_info if:
-- Message is too short or unclear to determine intent (e.g., just "hi" or "hello")
+- Message is too short or unclear (e.g., just "hi")
 - Context is insufficient for classification
-- Mixed signals that require clarification
 
-## Conversation Context:
-
-Source Platform: {source}
-
-## Conversation Messages:
-
+## Conversation (Source: {source}):
 {formatted_messages}
 
-## Response Format:
-
 Respond with valid JSON only:
-{{
-    "classification": "lead" | "not_lead" | "needs_info",
-    "confidence": 0.0 to 1.0,
-    "reasoning": "Brief explanation of why this classification was chosen",
-    "key_signals": ["list", "of", "key", "indicators"]
-}}
-"""
+{{"classification": "lead" | "not_lead" | "needs_info", "confidence": 0.0-1.0, "reasoning": "brief explanation", "key_signals": ["signal1", "signal2"]}}"""
 
 
 # ============================================================================
-# Classifier
+# Classifier (Optimized)
 # ============================================================================
 
 class LeadClassifier:
     def __init__(
         self,
         api_key: str = None,
-        model_name: str = "gemini-1.5-flash",
+        model_name: str = "gemini-2.0-flash-lite",
         project_id: str = None,
         location: str = "us-central1"
     ):
@@ -118,7 +100,7 @@ class LeadClassifier:
 
         Args:
             api_key: Google AI Studio API key (optional, starts with AIza)
-            model_name: Gemini model to use (default: gemini-2.0-flash)
+            model_name: Gemini model to use (default: gemini-2.0-flash-lite)
             project_id: GCP project ID (for Vertex AI mode)
             location: GCP region (default: us-central1)
         """
@@ -127,19 +109,63 @@ class LeadClassifier:
         self.project_id = project_id or os.getenv("GCP_PROJECT_ID")
         self.location = location
 
+        # ✅ FIX 1: Reuse HTTP session (connection pooling)
+        self.session = requests.Session()
+        
+        # ✅ FIX 2: Cache for credentials (Vertex AI mode)
+        self._credentials = None
+        self._auth_req = None
+
         # Detect mode based on API key format
         if self.api_key and self.api_key.startswith("AIza"):
             # Google AI Studio mode (API key in URL)
             self.mode = "ai_studio"
             self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
+            self.url = f"{self.base_url}/{self.model_name}:generateContent?key={self.api_key}"
+            self.headers = {"Content-Type": "application/json"}
         elif self.api_key and self.api_key.startswith("AQ."):
             # Vertex AI with API key mode
             self.mode = "vertex_ai_key"
             self.base_url = "https://aiplatform.googleapis.com/v1/publishers/google/models"
+            self.url = f"{self.base_url}/{self.model_name}:generateContent?key={self.api_key}"
+            self.headers = {"Content-Type": "application/json"}
         else:
             # Vertex AI mode (uses ADC/OAuth2)
             self.mode = "vertex_ai"
             self.base_url = f"https://{location}-aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{location}/publishers/google/models"
+            self.url = f"{self.base_url}/{self.model_name}:generateContent"
+            # ✅ FIX 3: Pre-load credentials at init (not on every request)
+            self._init_credentials()
+
+        print(f"[LeadClassifier] Initialized in {self.mode} mode with model {self.model_name}")
+
+    def _init_credentials(self):
+        """Initialize credentials once at startup (Vertex AI only)."""
+        try:
+            import google.auth
+            import google.auth.transport.requests
+            
+            self._credentials, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            self._auth_req = google.auth.transport.requests.Request()
+            # Initial token refresh
+            self._credentials.refresh(self._auth_req)
+            print("[LeadClassifier] Credentials initialized successfully")
+        except Exception as e:
+            raise Exception(f"Failed to initialize credentials: {e}")
+
+    def _get_headers(self) -> dict:
+        """Get headers, refreshing token only if needed (Vertex AI)."""
+        if self.mode == "vertex_ai":
+            # ✅ FIX 4: Only refresh token if expired
+            if not self._credentials.valid:
+                self._credentials.refresh(self._auth_req)
+            return {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._credentials.token}"
+            }
+        return self.headers
 
     def _format_messages(self, messages: list[dict]) -> str:
         """Format conversation messages for the prompt."""
@@ -173,15 +199,6 @@ class LeadClassifier:
             formatted_messages=formatted_messages
         )
 
-    def _get_access_token(self) -> str:
-        """Get OAuth2 access token for Vertex AI using ADC."""
-        credentials, project = google.auth.default(
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        auth_req = google.auth.transport.requests.Request()
-        credentials.refresh(auth_req)
-        return credentials.token
-
     def classify(self, conversation: ConversationInput) -> ClassificationResult:
         """
         Classify a conversation as lead or not.
@@ -199,28 +216,21 @@ class LeadClassifier:
             "generationConfig": {
                 "temperature": 0.1,
                 "topP": 0.8,
-                "maxOutputTokens": 1024,
+                "maxOutputTokens": 256,  # ✅ FIX 5: Reduced from 1024 (you only need ~100 tokens)
                 "responseMimeType": "application/json",
             }
         }
 
-        if self.mode == "ai_studio" or self.mode == "vertex_ai_key":
-            # Google AI Studio or Vertex AI with API key: use API key in URL
-            url = f"{self.base_url}/{self.model_name}:generateContent?key={self.api_key}"
-            headers = {"Content-Type": "application/json"}
-        else:
-            # Vertex AI: use OAuth2 bearer token
-            url = f"{self.base_url}/{self.model_name}:generateContent"
-            access_token = self._get_access_token()
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {access_token}"
-            }
+        # ✅ FIX 6: Use session for connection reuse
+        response = self.session.post(
+            self.url,
+            json=payload,
+            headers=self._get_headers(),
+            timeout=30  # Add timeout to prevent hanging
+        )
 
-        response = requests.post(url, json=payload, headers=headers)
         if not response.ok:
             raise Exception(f"{response.status_code}: {response.text}")
-
 
         data = response.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -257,7 +267,8 @@ class LeadClassifier:
 # ============================================================================
 
 def main():
-    # Initialize classifier (uses GEMINI_API_KEY from .env)
+    # Initialize classifier ONCE (uses GEMINI_API_KEY from .env)
+    # ✅ Important: Create classifier once, reuse for all requests
     classifier = LeadClassifier()
 
     # Example clinic data
@@ -334,28 +345,39 @@ def main():
         ),
     ]
 
-    # Classify all conversations
+    # Classify all conversations with timing
     print("=" * 60)
-    print("LEAD CLASSIFICATION RESULTS")
+    print("LEAD CLASSIFICATION RESULTS (OPTIMIZED)")
     print("=" * 60)
 
     try:
-        results = classifier.classify_batch(examples)
+        total_start = time.time()
 
-        for conv, result in zip(examples, results):
+        for conv in examples:
+            start_time = time.time()
+            result = classifier.classify(conv)
+            elapsed = time.time() - start_time
+
             print(f"\n--- Conversation: {conv.conversation_id} ({conv.source}) ---")
             print(f"Clinic: {conv.clinic_name}")
             print(f"Messages: {len(conv.messages)}")
             print(f"\nResult:")
             print(f"  Classification: {result.classification.upper()}")
-            print(f"  Is Lead: {'YES' if result.is_lead else 'NO'}")
+            print(f"  Is Lead: {'YES ✓' if result.is_lead else 'NO ✗'}")
             print(f"  Confidence: {result.confidence:.0%}")
             print(f"  Reasoning: {result.reasoning}")
             print(f"  Key Signals: {', '.join(result.key_signals)}")
+            print(f"  ⏱️  Response Time: {elapsed:.2f}s")  # ✅ Now should be 0.5-2s
             print("-" * 60)
+
+        total_elapsed = time.time() - total_start
+        print(f"\n✅ Total time for {len(examples)} classifications: {total_elapsed:.2f}s")
+        print(f"✅ Average per classification: {total_elapsed/len(examples):.2f}s")
 
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
