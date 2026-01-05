@@ -123,6 +123,18 @@ class LeadClassifier:
         self.model_name = model_name
         # Vertex AI endpoint
         self.base_url = "https://aiplatform.googleapis.com/v1/publishers/google/models"
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Get or create aiohttp session."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self):
+        """Close the aiohttp session."""
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     def _format_messages(self, messages: list[dict]) -> str:
         """Format conversation messages for the prompt."""
@@ -156,7 +168,7 @@ class LeadClassifier:
             formatted_messages=formatted_messages
         )
 
-    def classify(self, conversation: ConversationInput) -> ClassificationResult:
+    async def classify(self, conversation: ConversationInput) -> ClassificationResult:
         """
         Classify a conversation as lead or not.
 
@@ -189,15 +201,16 @@ class LeadClassifier:
         }
 
         # Call Vertex AI API
-        response = requests.post(
+        session = await self._get_session()
+        async with session.post(
             url,
             json=payload,
             headers={"Content-Type": "application/json"}
-        )
-        response.raise_for_status()
+        ) as response:
+            response.raise_for_status()
+            response_data = await response.json()
 
         # Parse response
-        response_data = response.json()
         text = response_data["candidates"][0]["content"]["parts"][0]["text"]
         result = json.loads(text)
 
@@ -210,12 +223,27 @@ class LeadClassifier:
             is_lead=classification == ClassificationType.LEAD
         )
 
+    async def classify_batch(
+        self, conversations: list[ConversationInput]
+    ) -> list[ClassificationResult]:
+        """
+        Classify multiple conversations concurrently.
+
+        Args:
+            conversations: List of ConversationInput objects
+
+        Returns:
+            List of ClassificationResult objects
+        """
+        tasks = [self.classify(conv) for conv in conversations]
+        return await asyncio.gather(*tasks)
+
 
 # ============================================================================
 # Usage Example
 # ============================================================================
 
-def main():
+async def main():
     # Initialize classifier (uses GEMINI_API_KEY from .env)
     classifier = LeadClassifier()
 
@@ -293,30 +321,31 @@ def main():
         ),
     ]
 
-    # Classify each conversation
-    print("=" * 60)
-    print("LEAD CLASSIFICATION RESULTS")
-    print("=" * 60)
+    try:
+        # Classify all conversations concurrently
+        print("=" * 60)
+        print("LEAD CLASSIFICATION RESULTS (ASYNC)")
+        print("=" * 60)
 
-    for conv in examples:
-        print(f"\n--- Conversation: {conv.conversation_id} ({conv.source}) ---")
-        print(f"Clinic: {conv.clinic_name}")
-        print(f"Messages: {len(conv.messages)}")
+        results = await classifier.classify_batch(examples)
 
-        try:
-            result = classifier.classify(conv)
-
+        for conv, result in zip(examples, results):
+            print(f"\n--- Conversation: {conv.conversation_id} ({conv.source}) ---")
+            print(f"Clinic: {conv.clinic_name}")
+            print(f"Messages: {len(conv.messages)}")
             print(f"\nResult:")
             print(f"  Classification: {result.classification.value.upper()}")
             print(f"  Is Lead: {'YES' if result.is_lead else 'NO'}")
             print(f"  Confidence: {result.confidence:.0%}")
             print(f"  Reasoning: {result.reasoning}")
+            print("-" * 60)
 
-        except Exception as e:
-            print(f"  Error: {e}")
+    except Exception as e:
+        print(f"Error: {e}")
 
-        print("-" * 60)
+    finally:
+        await classifier.close()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
