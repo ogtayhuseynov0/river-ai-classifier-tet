@@ -15,12 +15,22 @@ st.set_page_config(
 st.title("🎯 Lead Classifier")
 st.markdown("Test the AI conversation classifier")
 
-# Initialize classifier (cached)
-@st.cache_resource
-def get_classifier():
-    return LeadClassifier()
+# Model selection
+model_options = [
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+selected_model = st.sidebar.selectbox("Model", model_options, index=0)
 
-classifier = get_classifier()
+# Initialize classifier
+classifier = LeadClassifier(model_name=selected_model)
+
+# Debug: show API config
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Mode: {classifier.mode}")
+st.sidebar.caption(f"Model: {classifier.model_name}")
 
 # Initialize clinics in session state
 if "clinics" not in st.session_state:
@@ -274,7 +284,7 @@ with col2:
             if result.is_lead:
                 st.markdown("## 🎯 LEAD")
                 st.success("This conversation shows lead potential!")
-            elif result.classification.value == "not_lead":
+            elif result.classification == "not_lead":
                 st.markdown("## 🚫 NOT A LEAD")
                 st.error("This conversation is not a lead.")
             else:
@@ -289,7 +299,7 @@ with col2:
                 confidence_color = "green" if result.confidence >= 0.8 else "orange" if result.confidence >= 0.6 else "red"
                 st.metric("Confidence", f"{result.confidence:.0%}")
             with m2:
-                st.metric("Classification", result.classification.value.replace("_", " ").upper())
+                st.metric("Classification", result.classification.replace("_", " ").upper())
 
         # Reasoning
         with st.container(border=True):
@@ -306,7 +316,7 @@ with col2:
         # Details
         with st.expander("📋 Full Details"):
             st.json({
-                "classification": result.classification.value,
+                "classification": result.classification,
                 "confidence": result.confidence,
                 "reasoning": result.reasoning,
                 "key_signals": result.key_signals,

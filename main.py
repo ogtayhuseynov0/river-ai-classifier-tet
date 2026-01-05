@@ -1,17 +1,18 @@
 """
 AI Conversation Classifier - Lead Detection
-Using Google GenAI SDK with Pydantic for structured output
+Using Google AI Studio or Vertex AI
 """
 
-import asyncio
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import requests
 from dotenv import load_dotenv
-from google import genai
-from pydantic import BaseModel, Field
+import google.auth
+import google.auth.transport.requests
 
 # Load environment variables from .env file
 env_path = Path(__file__).parent / ".env"
@@ -21,22 +22,6 @@ load_dotenv(env_path)
 # ============================================================================
 # Configuration
 # ============================================================================
-
-# Pydantic model for structured output with enum
-class ClassificationResponse(BaseModel):
-    classification: Literal["lead", "not_lead", "needs_info"] = Field(
-        description="The classification of the conversation"
-    )
-    confidence: float = Field(
-        description="Confidence score between 0.0 and 1.0"
-    )
-    reasoning: str = Field(
-        description="Brief explanation of the classification decision"
-    )
-    key_signals: list[str] = Field(
-        description="Key indicators that led to this classification"
-    )
-
 
 @dataclass
 class ClassificationResult:
@@ -120,18 +105,41 @@ class LeadClassifier:
     def __init__(
         self,
         api_key: str = None,
-        model_name: str = "gemini-2.0-flash"
+        model_name: str = "gemini-1.5-flash",
+        project_id: str = None,
+        location: str = "us-central1"
     ):
         """
-        Initialize the Lead Classifier with Google GenAI SDK.
+        Initialize the Lead Classifier.
+
+        Supports two modes:
+        - Google AI Studio: API key starting with 'AIza...'
+        - Vertex AI: Uses Application Default Credentials (ADC)
 
         Args:
-            api_key: Gemini API key
+            api_key: Google AI Studio API key (optional, starts with AIza)
             model_name: Gemini model to use (default: gemini-2.0-flash)
+            project_id: GCP project ID (for Vertex AI mode)
+            location: GCP region (default: us-central1)
         """
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model_name = model_name
-        self.client = genai.Client(api_key=self.api_key)
+        self.project_id = project_id or os.getenv("GCP_PROJECT_ID")
+        self.location = location
+
+        # Detect mode based on API key format
+        if self.api_key and self.api_key.startswith("AIza"):
+            # Google AI Studio mode (API key in URL)
+            self.mode = "ai_studio"
+            self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
+        elif self.api_key and self.api_key.startswith("AQ."):
+            # Vertex AI with API key mode
+            self.mode = "vertex_ai_key"
+            self.base_url = "https://aiplatform.googleapis.com/v1/publishers/google/models"
+        else:
+            # Vertex AI mode (uses ADC/OAuth2)
+            self.mode = "vertex_ai"
+            self.base_url = f"https://{location}-aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{location}/publishers/google/models"
 
     def _format_messages(self, messages: list[dict]) -> str:
         """Format conversation messages for the prompt."""
@@ -165,6 +173,15 @@ class LeadClassifier:
             formatted_messages=formatted_messages
         )
 
+    def _get_access_token(self) -> str:
+        """Get OAuth2 access token for Vertex AI using ADC."""
+        credentials, project = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        auth_req = google.auth.transport.requests.Request()
+        credentials.refresh(auth_req)
+        return credentials.token
+
     def classify(self, conversation: ConversationInput) -> ClassificationResult:
         """
         Classify a conversation as lead or not.
@@ -177,28 +194,48 @@ class LeadClassifier:
         """
         prompt = self._build_prompt(conversation)
 
-        # Call Gemini with Pydantic schema for structured output
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config={
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
                 "temperature": 0.1,
-                "top_p": 0.8,
-                "max_output_tokens": 1024,
-                "response_mime_type": "application/json",
-                "response_schema": ClassificationResponse,
-            },
-        )
+                "topP": 0.8,
+                "maxOutputTokens": 1024,
+                "responseMimeType": "application/json",
+            }
+        }
 
-        # Parse response using Pydantic model
-        result = ClassificationResponse.model_validate_json(response.text)
+        if self.mode == "ai_studio" or self.mode == "vertex_ai_key":
+            # Google AI Studio or Vertex AI with API key: use API key in URL
+            url = f"{self.base_url}/{self.model_name}:generateContent?key={self.api_key}"
+            headers = {"Content-Type": "application/json"}
+        else:
+            # Vertex AI: use OAuth2 bearer token
+            url = f"{self.base_url}/{self.model_name}:generateContent"
+            access_token = self._get_access_token()
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}"
+            }
+
+        print(f"DEBUG URL: {url[:80]}...")  # Debug
+        response = requests.post(url, json=payload, headers=headers)
+        if not response.ok:
+            raise Exception(f"{response.status_code}: {response.text}")
+
+
+        data = response.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        result = json.loads(text)
+
+        # Normalize classification to lowercase
+        classification = result.get("classification", "needs_info").lower()
 
         return ClassificationResult(
-            classification=result.classification,
-            confidence=result.confidence,
-            reasoning=result.reasoning,
-            key_signals=result.key_signals,
-            is_lead=result.classification == "lead"
+            classification=classification,
+            confidence=result.get("confidence", 0.0),
+            reasoning=result.get("reasoning", ""),
+            key_signals=result.get("key_signals", []),
+            is_lead=classification == "lead"
         )
 
     def classify_batch(
