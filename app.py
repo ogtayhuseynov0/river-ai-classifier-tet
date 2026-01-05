@@ -3,6 +3,7 @@ Streamlit UI for Lead Classifier Testing
 """
 
 import streamlit as st
+import time
 from main import LeadClassifier, ConversationInput
 
 # Page config
@@ -175,6 +176,9 @@ if "messages" not in st.session_state:
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
 
+if "last_response_time" not in st.session_state:
+    st.session_state.last_response_time = 0
+
 # Main area
 st.markdown("---")
 
@@ -243,7 +247,9 @@ with col1:
                                 clinic_type=clinic_type,
                                 services=services
                             )
+                            start_time = time.time()
                             st.session_state.last_result = classifier.classify(conversation)
+                            st.session_state.last_response_time = time.time() - start_time
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {str(e)}")
@@ -294,12 +300,14 @@ with col2:
             st.markdown("---")
 
             # Metrics
-            m1, m2 = st.columns(2)
+            m1, m2, m3 = st.columns(3)
             with m1:
-                confidence_color = "green" if result.confidence >= 0.8 else "orange" if result.confidence >= 0.6 else "red"
                 st.metric("Confidence", f"{result.confidence:.0%}")
             with m2:
                 st.metric("Classification", result.classification.replace("_", " ").upper())
+            with m3:
+                response_time = st.session_state.get("last_response_time", 0)
+                st.metric("Response Time", f"{response_time:.2f}s")
 
         # Reasoning
         with st.container(border=True):
