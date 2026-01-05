@@ -217,7 +217,6 @@ class LeadClassifier:
                 "Authorization": f"Bearer {access_token}"
             }
 
-        print(f"DEBUG URL: {url[:80]}...")  # Debug
         response = requests.post(url, json=payload, headers=headers)
         if not response.ok:
             raise Exception(f"{response.status_code}: {response.text}")
