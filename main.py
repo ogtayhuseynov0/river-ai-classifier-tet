@@ -1,18 +1,17 @@
 """
 AI Conversation Classifier - Lead Detection
-Single file async implementation using Vertex AI Gemini REST API
+Using Google GenAI SDK with Pydantic for structured output
 """
 
 import asyncio
-import json
 import os
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Literal
 
-import aiohttp
 from dotenv import load_dotenv
+from google import genai
+from pydantic import BaseModel, Field
 
 # Load environment variables from .env file
 env_path = Path(__file__).parent / ".env"
@@ -23,17 +22,28 @@ load_dotenv(env_path)
 # Configuration
 # ============================================================================
 
-class ClassificationType(str, Enum):
-    LEAD = "lead"
-    NOT_LEAD = "not_lead"
-    NEEDS_INFO = "needs_info"
+# Pydantic model for structured output with enum
+class ClassificationResponse(BaseModel):
+    classification: Literal["lead", "not_lead", "needs_info"] = Field(
+        description="The classification of the conversation"
+    )
+    confidence: float = Field(
+        description="Confidence score between 0.0 and 1.0"
+    )
+    reasoning: str = Field(
+        description="Brief explanation of the classification decision"
+    )
+    key_signals: list[str] = Field(
+        description="Key indicators that led to this classification"
+    )
 
 
 @dataclass
 class ClassificationResult:
-    classification: ClassificationType
+    classification: str
     confidence: float
     reasoning: str
+    key_signals: list[str]
     is_lead: bool
 
 
@@ -113,16 +123,15 @@ class LeadClassifier:
         model_name: str = "gemini-2.0-flash"
     ):
         """
-        Initialize the Lead Classifier with Vertex AI REST API.
+        Initialize the Lead Classifier with Google GenAI SDK.
 
         Args:
-            api_key: Vertex AI API key
+            api_key: Gemini API key
             model_name: Gemini model to use (default: gemini-2.0-flash)
         """
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model_name = model_name
-        # Vertex AI endpoint
-        self.base_url = "https://aiplatform.googleapis.com/v1/publishers/google/models"
+        self.client = genai.Client(api_key=self.api_key)
 
     def _format_messages(self, messages: list[dict]) -> str:
         """Format conversation messages for the prompt."""
@@ -156,7 +165,7 @@ class LeadClassifier:
             formatted_messages=formatted_messages
         )
 
-    async def classify(self, conversation: ConversationInput) -> ClassificationResult:
+    def classify(self, conversation: ConversationInput) -> ClassificationResult:
         """
         Classify a conversation as lead or not.
 
@@ -168,55 +177,35 @@ class LeadClassifier:
         """
         prompt = self._build_prompt(conversation)
 
-        # Build API request for Vertex AI
-        url = f"{self.base_url}/{self.model_name}:generateContent?key={self.api_key}"
-
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
-            ],
-            "generationConfig": {
+        # Call Gemini with Pydantic schema for structured output
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=prompt,
+            config={
                 "temperature": 0.1,
-                "topP": 0.8,
-                "maxOutputTokens": 1024,
-                "responseMimeType": "application/json"
-            }
-        }
-
-        # Call Vertex AI API - create new session each time to avoid loop issues
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            ) as response:
-                response.raise_for_status()
-                response_data = await response.json()
-
-        # Parse response
-        text = response_data["candidates"][0]["content"]["parts"][0]["text"]
-        result = json.loads(text)
-
-        # Handle case-insensitive classification
-        classification = ClassificationType(result["classification"].lower())
-
-        return ClassificationResult(
-            classification=classification,
-            confidence=result["confidence"],
-            reasoning=result["reasoning"],
-            is_lead=classification == ClassificationType.LEAD
+                "top_p": 0.8,
+                "max_output_tokens": 1024,
+                "response_mime_type": "application/json",
+                "response_schema": ClassificationResponse,
+            },
         )
 
-    async def classify_batch(
+        # Parse response using Pydantic model
+        result = ClassificationResponse.model_validate_json(response.text)
+
+        return ClassificationResult(
+            classification=result.classification,
+            confidence=result.confidence,
+            reasoning=result.reasoning,
+            key_signals=result.key_signals,
+            is_lead=result.classification == "lead"
+        )
+
+    def classify_batch(
         self, conversations: list[ConversationInput]
     ) -> list[ClassificationResult]:
         """
-        Classify multiple conversations concurrently.
+        Classify multiple conversations.
 
         Args:
             conversations: List of ConversationInput objects
@@ -224,15 +213,14 @@ class LeadClassifier:
         Returns:
             List of ClassificationResult objects
         """
-        tasks = [self.classify(conv) for conv in conversations]
-        return await asyncio.gather(*tasks)
+        return [self.classify(conv) for conv in conversations]
 
 
 # ============================================================================
 # Usage Example
 # ============================================================================
 
-async def main():
+def main():
     # Initialize classifier (uses GEMINI_API_KEY from .env)
     classifier = LeadClassifier()
 
@@ -310,23 +298,24 @@ async def main():
         ),
     ]
 
-    # Classify all conversations concurrently
+    # Classify all conversations
     print("=" * 60)
-    print("LEAD CLASSIFICATION RESULTS (ASYNC)")
+    print("LEAD CLASSIFICATION RESULTS")
     print("=" * 60)
 
     try:
-        results = await classifier.classify_batch(examples)
+        results = classifier.classify_batch(examples)
 
         for conv, result in zip(examples, results):
             print(f"\n--- Conversation: {conv.conversation_id} ({conv.source}) ---")
             print(f"Clinic: {conv.clinic_name}")
             print(f"Messages: {len(conv.messages)}")
             print(f"\nResult:")
-            print(f"  Classification: {result.classification.value.upper()}")
+            print(f"  Classification: {result.classification.upper()}")
             print(f"  Is Lead: {'YES' if result.is_lead else 'NO'}")
             print(f"  Confidence: {result.confidence:.0%}")
             print(f"  Reasoning: {result.reasoning}")
+            print(f"  Key Signals: {', '.join(result.key_signals)}")
             print("-" * 60)
 
     except Exception as e:
@@ -334,4 +323,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

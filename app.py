@@ -2,13 +2,8 @@
 Streamlit UI for Lead Classifier Testing
 """
 
-import asyncio
-import nest_asyncio
 import streamlit as st
 from main import LeadClassifier, ConversationInput
-
-# Allow nested event loops (needed for Streamlit + async)
-nest_asyncio.apply()
 
 # Page config
 st.set_page_config(
@@ -238,7 +233,7 @@ with col1:
                                 clinic_type=clinic_type,
                                 services=services
                             )
-                            st.session_state.last_result = asyncio.run(classifier.classify(conversation))
+                            st.session_state.last_result = classifier.classify(conversation)
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {str(e)}")
@@ -301,12 +296,20 @@ with col2:
             st.markdown("**💭 AI Reasoning**")
             st.markdown(result.reasoning)
 
+        # Key Signals
+        if result.key_signals:
+            with st.container(border=True):
+                st.markdown("**🔍 Key Signals**")
+                for signal in result.key_signals:
+                    st.markdown(f"• {signal}")
+
         # Details
         with st.expander("📋 Full Details"):
             st.json({
                 "classification": result.classification.value,
                 "confidence": result.confidence,
                 "reasoning": result.reasoning,
+                "key_signals": result.key_signals,
                 "is_lead": result.is_lead,
                 "clinic": clinic_name,
                 "source": source,
