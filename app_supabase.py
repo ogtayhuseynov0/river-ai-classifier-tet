@@ -140,22 +140,32 @@ st.sidebar.header("💬 Chats")
 channel_options = ["All", "Instagram", "WhatsApp", "Facebook", "Email", "SMS"]
 selected_channel = st.sidebar.selectbox("Channel", channel_options)
 
-# Load chats
+# Reset pagination when org or channel changes
+filter_key = f"{selected_org_id}_{selected_channel}"
+if st.session_state.get("filter_key") != filter_key:
+    st.session_state.filter_key = filter_key
+    st.session_state.chat_limit = 20
+
+# Pagination state
+if "chat_limit" not in st.session_state:
+    st.session_state.chat_limit = 20
+
+# Load chats (ordered by last_message_at desc)
 channel_filter = None if selected_channel == "All" else selected_channel
-chats = load_chats(selected_org_id, channel_type=channel_filter)
+chats = load_chats(selected_org_id, channel_type=channel_filter, limit=st.session_state.chat_limit)
 
 if not chats:
     st.info("No chats found for this organisation")
     st.stop()
 
 # Display chat list
-st.sidebar.markdown(f"**{len(chats)} chats**")
+st.sidebar.markdown(f"**{len(chats)} chats loaded**")
 
 # Store selected chat in session
 if "selected_chat_id" not in st.session_state:
     st.session_state.selected_chat_id = None
 
-for chat in chats[:30]:
+for chat in chats:
     # Use chat title or preview - NO preloading of messages
     chat_title = chat.get("title") or "Chat"
     preview = (chat.get("last_message_preview") or "")[:25]
@@ -171,6 +181,12 @@ for chat in chats[:30]:
         st.session_state.selected_chat_id = chat["id"]
         st.session_state.selected_contact = None  # Will load on demand
         st.session_state.last_result = None
+        st.rerun()
+
+# Load more button
+if len(chats) >= st.session_state.chat_limit:
+    if st.sidebar.button("📥 Load more chats", use_container_width=True):
+        st.session_state.chat_limit += 20
         st.rerun()
 
 # Main area - two columns
