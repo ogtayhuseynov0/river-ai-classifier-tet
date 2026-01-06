@@ -24,6 +24,38 @@ st.set_page_config(
     layout="wide"
 )
 
+# ============================================================================
+# Password Protection (optional - set APP_PASSWORD in secrets)
+# ============================================================================
+def check_password():
+    """Simple password protection."""
+    app_password = os.getenv("APP_PASSWORD")
+
+    # Skip if no password set
+    if not app_password:
+        return True
+
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        return True
+
+    st.title("🔐 Login Required")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        if password == app_password:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password")
+
+    return False
+
+if not check_password():
+    st.stop()
+
 # Initialize Supabase
 @st.cache_resource
 def get_supabase() -> Client:
