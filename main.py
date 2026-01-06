@@ -156,6 +156,9 @@ class LeadClassifier:
         for msg in messages:
             role = msg.get("role", "unknown").upper()
             content = msg.get("content", "")
+            # Sanitize content to prevent JSON issues
+            content = content.replace("\n", " ").replace("\r", " ").replace('"', "'")
+            content = content[:500]  # Limit message length
             timestamp = msg.get("timestamp", "")
 
             if timestamp:
@@ -217,22 +220,96 @@ class LeadClassifier:
 
         data = response.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
-        result = json.loads(text)
 
-        # Handle if model returns a list instead of dict
-        if isinstance(result, list):
-            result = result[0] if result else {}
+        # Parse response with robust error handling
+        result = self._parse_json_response(text)
 
         # Normalize classification to lowercase
-        classification = result.get("classification", "needs_info").lower()
+        classification = str(result.get("classification", "needs_info")).lower()
+        # Handle variations
+        if classification in ["lead", "is_lead", "yes"]:
+            classification = "lead"
+        elif classification in ["not_lead", "notlead", "no", "spam"]:
+            classification = "not_lead"
+        else:
+            classification = "needs_info"
 
         return ClassificationResult(
             classification=classification,
-            confidence=result.get("confidence", 0.0),
-            reasoning=result.get("reasoning", ""),
-            key_signals=result.get("key_signals", []),
+            confidence=float(result.get("confidence", 0.5)),
+            reasoning=str(result.get("reasoning", "")),
+            key_signals=result.get("key_signals", []) or [],
             is_lead=classification == "lead"
         )
+
+    def _parse_json_response(self, text: str) -> dict:
+        """Parse JSON response with multiple fallback strategies."""
+        import re
+
+        # Strategy 1: Direct parse
+        try:
+            result = json.loads(text)
+            if isinstance(result, list):
+                return result[0] if result else {}
+            return result
+        except:
+            pass
+
+        # Strategy 2: Find JSON object with brace matching
+        try:
+            start = text.find('{')
+            if start != -1:
+                depth = 0
+                for i, char in enumerate(text[start:], start):
+                    if char == '{':
+                        depth += 1
+                    elif char == '}':
+                        depth -= 1
+                        if depth == 0:
+                            result = json.loads(text[start:i+1])
+                            if isinstance(result, list):
+                                return result[0] if result else {}
+                            return result
+        except:
+            pass
+
+        # Strategy 3: Extract key fields with regex
+        try:
+            classification = "needs_info"
+            confidence = 0.5
+            reasoning = ""
+
+            # Find classification
+            class_match = re.search(r'"classification"\s*:\s*"([^"]+)"', text)
+            if class_match:
+                classification = class_match.group(1).lower()
+
+            # Find confidence
+            conf_match = re.search(r'"confidence"\s*:\s*([\d.]+)', text)
+            if conf_match:
+                confidence = float(conf_match.group(1))
+
+            # Find reasoning
+            reason_match = re.search(r'"reasoning"\s*:\s*"([^"]*)"', text)
+            if reason_match:
+                reasoning = reason_match.group(1)
+
+            return {
+                "classification": classification,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "key_signals": []
+            }
+        except:
+            pass
+
+        # Fallback
+        return {
+            "classification": "needs_info",
+            "confidence": 0.5,
+            "reasoning": "Could not parse AI response",
+            "key_signals": []
+        }
 
     def classify_batch(
         self, conversations: list[ConversationInput]
