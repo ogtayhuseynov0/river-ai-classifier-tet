@@ -63,10 +63,10 @@ def load_org_services(org_id: str):
 
 @st.cache_data(ttl=60)
 def load_chats(org_id: str, channel_type: str = None, limit: int = 50):
-    """Load recent chats for an organisation."""
+    """Load recent single chats for an organisation (no group chats)."""
     query = supabase.schema("crm").table("chats").select(
         "id, org_id, channel_type, title, last_message_at, last_message_preview, is_archived, is_group"
-    ).eq("org_id", org_id).eq("is_archived", False).order("last_message_at", desc=True).limit(limit)
+    ).eq("org_id", org_id).eq("is_archived", False).eq("is_group", False).order("last_message_at", desc=True).limit(limit)
 
     if channel_type:
         query = query.eq("channel_type", channel_type)
@@ -156,32 +156,20 @@ if "selected_chat_id" not in st.session_state:
     st.session_state.selected_chat_id = None
 
 for chat in chats[:30]:
-    # Get contact from chat messages
-    contact = get_contact_from_chat(chat["id"])
-
-    # Determine stage_group
-    stage_group = contact.get("stage_group") if contact else None
-    contact_name = chat.get("title") or (contact.get("display_name") if contact else None) or "Unknown"
-
-    # Lead status indicator based on stage_group
-    if stage_group == "LEAD":
-        status = "🟢"
-    elif stage_group == "PATIENT":
-        status = "🔵"
-    else:
-        status = "⚪"
+    # Use chat title or preview - NO preloading of messages
+    chat_title = chat.get("title") or "Chat"
+    preview = (chat.get("last_message_preview") or "")[:25]
 
     # Channel icon
     channel = chat.get("channel_type", "")
     channel_icon = {"Instagram": "📸", "WhatsApp": "💬", "Facebook": "👤", "Email": "📧", "SMS": "📱"}.get(channel, "💬")
 
-    # Chat button
-    preview = (chat.get("last_message_preview") or "")[:20]
-    label = f"{status} {contact_name[:12]} {channel_icon}"
+    # Chat button - simple label without contact lookup
+    label = f"{channel_icon} {chat_title[:15] if chat_title != 'Chat' else preview[:15] or 'Chat'}"
 
     if st.sidebar.button(label, key=f"chat_{chat['id']}", use_container_width=True, help=preview):
         st.session_state.selected_chat_id = chat["id"]
-        st.session_state.selected_contact = contact
+        st.session_state.selected_contact = None  # Will load on demand
         st.session_state.last_result = None
         st.rerun()
 
@@ -189,11 +177,18 @@ for chat in chats[:30]:
 if st.session_state.selected_chat_id:
     col1, col2 = st.columns([1, 1], gap="large")
 
+    # Load messages (only when chat is selected)
+    messages = load_chat_messages(st.session_state.selected_chat_id)
+
+    # Load contact on demand (from first message with contact_id)
+    if st.session_state.get("selected_contact") is None:
+        for msg in messages or []:
+            if msg.get("contact_id"):
+                st.session_state.selected_contact = load_contact(msg["contact_id"])
+                break
+
     with col1:
         st.markdown("### 💬 Conversation")
-
-        # Load messages
-        messages = load_chat_messages(st.session_state.selected_chat_id)
 
         # Classify button at TOP
         if st.button("🚀 Classify Conversation", type="primary", use_container_width=True):
