@@ -56,6 +56,13 @@ LEAD - asking about OUR services listed above, pricing, appointments, or related
 NOT_LEAD - spam, wrong number, job seekers, OR asking about services WE DON'T OFFER
 NEEDS_INFO - too short/unclear (just "hi")
 
+Confidence guide:
+- 0.95+ = explicit intent (e.g. "I want to book an appointment for X")
+- 0.80-0.94 = strong signals (asking prices, availability)
+- 0.60-0.79 = moderate signals (general interest, unclear which service)
+- 0.40-0.59 = weak signals (vague message, mixed intent)
+- <0.40 = very uncertain
+
 Conversation ({source}):
 {formatted_messages}
 
