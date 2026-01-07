@@ -24,7 +24,8 @@ load_dotenv(env_path)
 
 # Organization IDs to process
 ORG_IDS = [
-    "org_34Idi1MhESIDmZYFbS6ExbT2NyN"
+    # "org_34Idi1MhESIDmZYFbS6ExbT2NyN",
+    "org_33m9zcPA8Ly0bwQTTRl6CdxFLsI",
 ]
 
 # How many chats per organization (set to None for all)
@@ -96,6 +97,30 @@ def fetch_contact(contact_id: str) -> dict:
     except:
         return None
 
+def fetch_contact_id_from_chat(thread_id: str) -> str | None:
+    """Get contact_id directly from DB (prioritize INBOUND messages)."""
+    # Try INBOUND first
+    response = supabase.schema("crm").table("chat_messages").select(
+        "contact_id"
+    ).eq("thread_id", thread_id).eq("direction", "INBOUND").not_.is_(
+        "contact_id", "null"
+    ).limit(1).execute()
+
+    if response.data and response.data[0].get("contact_id"):
+        return response.data[0]["contact_id"]
+
+    # Fallback to any message with contact_id
+    response = supabase.schema("crm").table("chat_messages").select(
+        "contact_id"
+    ).eq("thread_id", thread_id).not_.is_(
+        "contact_id", "null"
+    ).limit(1).execute()
+
+    if response.data and response.data[0].get("contact_id"):
+        return response.data[0]["contact_id"]
+
+    return None
+
 # ============================================================================
 # Classification logic
 # ============================================================================
@@ -116,32 +141,12 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
     chat_id = chat["id"]
     channel_type = chat.get("channel_type", "Unknown")
 
-    # Fetch messages
-    messages = fetch_chat_messages(chat_id)
-
-    if not messages:
-        return None  # Skip chats without messages
-
-    # Get contact from messages (prioritize INBOUND messages)
+    # Get contact directly from DB (single query with INBOUND priority)
     contact = None
     contact_name = "Unknown"
     ground_truth = None
-    contact_id = None
 
-    # First try INBOUND messages (customer messages)
-    for msg in messages:
-        if msg.get("direction") == "INBOUND" and msg.get("contact_id"):
-            contact_id = msg["contact_id"]
-            break
-
-    # If no INBOUND with contact_id, try any message
-    if not contact_id:
-        for msg in messages:
-            if msg.get("contact_id"):
-                contact_id = msg["contact_id"]
-                break
-
-    # Fetch contact details
+    contact_id = fetch_contact_id_from_chat(chat_id)
     if contact_id:
         contact = fetch_contact(contact_id)
         if contact:
@@ -151,6 +156,11 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
     # Skip if no ground truth and we require it
     if require_ground_truth and ground_truth not in ["Lead", "Customer"]:
         return None  # Skip - no ground truth set
+
+    # Now fetch messages (only for chats we'll actually process)
+    messages = fetch_chat_messages(chat_id)
+    if not messages:
+        return None  # Skip chats without messages
 
     # Format messages for classifier
     formatted_messages = []
@@ -198,6 +208,7 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
             match = "✗ Mismatch"
 
         return {
+            "clinic_name": org_name,
             "chat_id": chat_id,
             "message_count": len(messages),
             "channel": channel_type,
@@ -214,6 +225,7 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
 
     except Exception as e:
         return {
+            "clinic_name": org_name,
             "chat_id": chat_id,
             "channel": channel_type,
             "contact_name": contact_name,
@@ -224,7 +236,7 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
             "match": "Error",
             "reasoning": str(e)[:200],
             "key_signals": "",
-            "message_count": len(messages),
+            "message_count": len(messages) if messages else 0,
             "note": ""
         }
 
@@ -293,7 +305,7 @@ def process_organisation(org_id: str) -> pd.DataFrame:
 
     # Reorder columns
     columns = [
-        "chat_id", "channel", "contact_name", "last_message_at", "ground_truth",
+        "clinic_name", "chat_id", "channel", "contact_name", "last_message_at", "ground_truth",
         "ai_classification", "confidence", "match",
         "reasoning", "key_signals", "message_count", "note"
     ]
@@ -303,19 +315,32 @@ def process_organisation(org_id: str) -> pd.DataFrame:
     df = df.sort_values("last_message_at", ascending=False)
     df = df.reset_index(drop=True)
 
-    # Summary
+    # Summary stats
     total = len(df)
     matches = len(df[df["match"] == "✓ Match"])
     mismatches = len(df[df["match"] == "✗ Mismatch"])
     customer_leads = len(df[df["match"] == "⚠ Customer (was lead)"])
+    accuracy = matches / total * 100 if total > 0 else 0
 
     print(f"\n  📊 Summary:")
     print(f"     Processed: {processed} (skipped {skipped} without ground truth)")
-    print(f"     Matches: {matches} ({matches/total*100:.1f}%)")
+    print(f"     Matches: {matches} ({accuracy:.1f}%)")
     print(f"     Mismatches: {mismatches} ({mismatches/total*100:.1f}%)")
     print(f"     Customer (was lead): {customer_leads}")
 
-    return df
+    # Return df and summary dict
+    summary = {
+        "clinic_name": org_name,
+        "total_chats": len(chats),
+        "processed": processed,
+        "skipped": skipped,
+        "matches": matches,
+        "mismatches": mismatches,
+        "customer_was_lead": customer_leads,
+        "accuracy": round(accuracy, 1)
+    }
+
+    return df, summary
 
 def main():
     """Main entry point."""
@@ -332,14 +357,17 @@ def main():
 
     # Process each organisation
     org_dataframes = {}
+    summaries = []
 
     for org_id in ORG_IDS:
-        df = process_organisation(org_id)
-        if df is not None:
+        result = process_organisation(org_id)
+        if result is not None:
+            df, summary = result
             # Get org name for sheet name
             org = fetch_organisation(org_id)
             sheet_name = (org.get("name", org_id) if org else org_id)[:31]  # Excel sheet name limit
             org_dataframes[sheet_name] = df
+            summaries.append(summary)
 
     # Write to Excel with multiple sheets
     if org_dataframes:
@@ -347,6 +375,21 @@ def main():
         print(f"📁 Writing to {OUTPUT_FILE}")
 
         with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+            # Summary sheet first
+            if summaries:
+                summary_df = pd.DataFrame(summaries)
+                summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+                # Auto-adjust summary column widths
+                worksheet = writer.sheets["Summary"]
+                for i, col in enumerate(summary_df.columns):
+                    max_length = max(
+                        summary_df[col].astype(str).map(len).max(),
+                        len(col)
+                    ) + 2
+                    worksheet.column_dimensions[chr(65 + i)].width = min(max_length, 30)
+
+            # Individual org sheets
             for sheet_name, df in org_dataframes.items():
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
 

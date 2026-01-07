@@ -125,24 +125,34 @@ def load_contact(contact_id: str):
     except:
         return None
 
+@st.cache_data(ttl=60)
+def get_contact_id_from_chat(thread_id: str) -> str | None:
+    """Get contact_id directly from DB (prioritize INBOUND messages)."""
+    # Try INBOUND first
+    response = supabase.schema("crm").table("chat_messages").select(
+        "contact_id"
+    ).eq("thread_id", thread_id).eq("direction", "INBOUND").not_.is_(
+        "contact_id", "null"
+    ).limit(1).execute()
+
+    if response.data and response.data[0].get("contact_id"):
+        return response.data[0]["contact_id"]
+
+    # Fallback to any message with contact_id
+    response = supabase.schema("crm").table("chat_messages").select(
+        "contact_id"
+    ).eq("thread_id", thread_id).not_.is_(
+        "contact_id", "null"
+    ).limit(1).execute()
+
+    if response.data and response.data[0].get("contact_id"):
+        return response.data[0]["contact_id"]
+
+    return None
+
 def get_contact_from_chat(thread_id: str):
-    """Get contact from messages (prioritize INBOUND)."""
-    messages = load_chat_messages(thread_id, limit=50)
-    contact_id = None
-
-    # First try INBOUND messages (customer messages)
-    for msg in messages:
-        if msg.get("direction") == "INBOUND" and msg.get("contact_id"):
-            contact_id = msg["contact_id"]
-            break
-
-    # If no INBOUND with contact_id, try any message
-    if not contact_id:
-        for msg in messages:
-            if msg.get("contact_id"):
-                contact_id = msg["contact_id"]
-                break
-
+    """Get contact from chat thread."""
+    contact_id = get_contact_id_from_chat(thread_id)
     if contact_id:
         return load_contact(contact_id)
     return None
