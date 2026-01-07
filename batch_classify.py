@@ -189,23 +189,24 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
 
         # Determine match
         ai_class = result.classification.upper()
-        ai_is_lead = ai_class == "LEAD"
 
-        if ground_truth == "Lead":
-            human_is_lead = True
+        # Handle NEEDS_INFO separately - it's not a classification decision
+        if ai_class == "NEEDS_INFO":
+            match = "⚠ Needs Info"
+        elif ground_truth == "Lead":
+            if ai_class == "LEAD":
+                match = "✓ Match"
+            else:
+                match = "✗ Mismatch"
         elif ground_truth == "Customer":
-            human_is_lead = False  # Converted customer
+            if ai_class == "NOT_LEAD":
+                match = "✓ Match"
+            elif ai_class == "LEAD":
+                match = "⚠ Customer (was lead)"
+            else:
+                match = "✗ Mismatch"
         else:
-            human_is_lead = None
-
-        if human_is_lead is None:
             match = "Unknown"
-        elif human_is_lead == ai_is_lead:
-            match = "✓ Match"
-        elif ground_truth == "Customer" and ai_is_lead:
-            match = "⚠ Customer (was lead)"
-        else:
-            match = "✗ Mismatch"
 
         return {
             "clinic_name": org_name,
@@ -320,13 +321,17 @@ def process_organisation(org_id: str) -> pd.DataFrame:
     matches = len(df[df["match"] == "✓ Match"])
     mismatches = len(df[df["match"] == "✗ Mismatch"])
     customer_leads = len(df[df["match"] == "⚠ Customer (was lead)"])
-    accuracy = matches / total * 100 if total > 0 else 0
+    needs_info = len(df[df["match"] == "⚠ Needs Info"])
+    # Accuracy excludes needs_info (undecided)
+    decided = total - needs_info
+    accuracy = matches / decided * 100 if decided > 0 else 0
 
     print(f"\n  📊 Summary:")
     print(f"     Processed: {processed} (skipped {skipped} without ground truth)")
     print(f"     Matches: {matches} ({accuracy:.1f}%)")
-    print(f"     Mismatches: {mismatches} ({mismatches/total*100:.1f}%)")
+    print(f"     Mismatches: {mismatches}")
     print(f"     Customer (was lead): {customer_leads}")
+    print(f"     Needs Info: {needs_info}")
 
     # Return df and summary dict
     summary = {
@@ -337,7 +342,8 @@ def process_organisation(org_id: str) -> pd.DataFrame:
         "matches": matches,
         "mismatches": mismatches,
         "customer_was_lead": customer_leads,
-        "accuracy": round(accuracy, 1)
+        "needs_info": needs_info,
+        "accuracy_pct": round(accuracy, 1)
     }
 
     return df, summary
