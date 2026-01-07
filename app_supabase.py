@@ -116,21 +116,35 @@ def load_chat_messages(thread_id: str, limit: int = 50):
 
 @st.cache_data(ttl=60)
 def load_contact(contact_id: str):
-    """Load contact details including stage_group (LEAD/PATIENT)."""
+    """Load contact details including lifecycle (Lead/Customer)."""
     try:
         response = supabase.schema("crm").table("contacts").select(
-            "id, first_name, last_name, display_name, stage_group, lifecycle, lead_score"
+            "id, first_name, last_name, display_name, lifecycle, lead_score"
         ).eq("id", contact_id).single().execute()
         return response.data
     except:
         return None
 
 def get_contact_from_chat(thread_id: str):
-    """Get contact from first inbound message in chat."""
-    messages = load_chat_messages(thread_id, limit=10)
+    """Get contact from messages (prioritize INBOUND)."""
+    messages = load_chat_messages(thread_id, limit=50)
+    contact_id = None
+
+    # First try INBOUND messages (customer messages)
     for msg in messages:
-        if msg.get("contact_id"):
-            return load_contact(msg["contact_id"])
+        if msg.get("direction") == "INBOUND" and msg.get("contact_id"):
+            contact_id = msg["contact_id"]
+            break
+
+    # If no INBOUND with contact_id, try any message
+    if not contact_id:
+        for msg in messages:
+            if msg.get("contact_id"):
+                contact_id = msg["contact_id"]
+                break
+
+    if contact_id:
+        return load_contact(contact_id)
     return None
 
 # ============================================================================
@@ -295,17 +309,17 @@ if st.session_state.selected_chat_id:
     with col2:
         st.markdown("### 🎯 Classification Result")
 
-        # Get actual stage_group from contact
+        # Get actual lifecycle from contact
         contact = st.session_state.get("selected_contact")
-        stage_group = contact.get("stage_group") if contact else None
+        lifecycle = contact.get("lifecycle") if contact else None
 
         # Show actual status (human label)
         with st.container(border=True):
-            st.markdown("**Human Label (stage_group)**")
-            if stage_group == "LEAD":
-                st.success("🟢 LEAD")
-            elif stage_group == "PATIENT":
-                st.info("🔵 PATIENT (converted)")
+            st.markdown("**Human Label (lifecycle)**")
+            if lifecycle == "Lead":
+                st.success("🟢 Lead")
+            elif lifecycle == "Customer":
+                st.info("🔵 Customer (converted)")
             else:
                 st.warning("⚪ Not labeled yet")
 
@@ -324,19 +338,19 @@ if st.session_state.selected_chat_id:
                     st.warning(f"⚪ NEEDS INFO ({result.confidence:.0%} confidence)")
 
                 # Match indicator
-                if stage_group:
-                    human_says_lead = stage_group == "LEAD"
+                if lifecycle:
+                    human_says_lead = lifecycle == "Lead"
                     ai_says_lead = result.is_lead
 
-                    # LEAD vs LEAD or PATIENT vs NOT_LEAD
+                    # Lead vs Lead or Customer vs NOT_LEAD
                     if human_says_lead and ai_says_lead:
-                        st.success("✅ Match! Both say LEAD")
+                        st.success("✅ Match! Both say Lead")
                     elif not human_says_lead and not ai_says_lead:
-                        st.success("✅ Match! Human=PATIENT, AI=NOT_LEAD")
+                        st.success("✅ Match! Human=Customer, AI=NOT_LEAD")
                     elif human_says_lead and not ai_says_lead:
-                        st.error("❌ Mismatch: Human=LEAD, AI=NOT_LEAD")
+                        st.error("❌ Mismatch: Human=Lead, AI=NOT_LEAD")
                     else:
-                        st.warning("⚠️ Human=PATIENT but AI=LEAD (already converted?)")
+                        st.warning("⚠️ Human=Customer but AI=LEAD (already converted?)")
 
             # Reasoning
             with st.container(border=True):
@@ -368,14 +382,14 @@ else:
     st.markdown("### Legend")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown("🟢 **LEAD** - potential customer")
+        st.markdown("🟢 **Lead** - potential customer")
     with col2:
-        st.markdown("🔵 **PATIENT** - converted")
+        st.markdown("🔵 **Customer** - converted")
     with col3:
         st.markdown("⚪ **Unknown** - not labeled")
 
 # Footer
 st.sidebar.markdown("---")
-st.sidebar.caption("**Legend:** 🟢 Lead | 🔵 Patient | ⚪ Unknown")
+st.sidebar.caption("**Legend:** 🟢 Lead | 🔵 Customer | ⚪ Unknown")
 st.sidebar.caption(f"Org: {selected_org_id[:8]}...")
 st.sidebar.caption(f"Model: {classifier.model_name}")

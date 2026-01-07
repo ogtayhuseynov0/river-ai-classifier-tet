@@ -28,7 +28,7 @@ ORG_IDS = [
 ]
 
 # How many chats per organization (set to None for all)
-CHAT_LIMIT = 150
+CHAT_LIMIT = 500
 
 # Output file
 OUTPUT_FILE = f"classification_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -79,7 +79,7 @@ def fetch_chats(org_id: str, limit: int = None) -> list[dict]:
     response = query.execute()
     return response.data or []
 
-def fetch_chat_messages(thread_id: str, limit: int = 50) -> list[dict]:
+def fetch_chat_messages(thread_id: str, limit: int = 100) -> list[dict]:
     """Fetch messages for a chat."""
     response = supabase.schema("crm").table("chat_messages").select(
         "id, direction, body, sent_at, received_at, created_at, contact_id"
@@ -90,7 +90,7 @@ def fetch_contact(contact_id: str) -> dict:
     """Fetch contact details."""
     try:
         response = supabase.schema("crm").table("contacts").select(
-            "id, first_name, last_name, display_name, stage_group, lifecycle"
+            "id, first_name, last_name, display_name, lifecycle"
         ).eq("id", contact_id).single().execute()
         return response.data
     except:
@@ -122,21 +122,34 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
     if not messages:
         return None  # Skip chats without messages
 
-    # Get contact from messages
+    # Get contact from messages (prioritize INBOUND messages)
     contact = None
     contact_name = "Unknown"
     ground_truth = None
+    contact_id = None
 
+    # First try INBOUND messages (customer messages)
     for msg in messages:
-        if msg.get("contact_id"):
-            contact = fetch_contact(msg["contact_id"])
-            if contact:
-                contact_name = contact.get("display_name") or f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "Unknown"
-                ground_truth = contact.get("stage_group")  # LEAD, PATIENT, or None
+        if msg.get("direction") == "INBOUND" and msg.get("contact_id"):
+            contact_id = msg["contact_id"]
             break
 
+    # If no INBOUND with contact_id, try any message
+    if not contact_id:
+        for msg in messages:
+            if msg.get("contact_id"):
+                contact_id = msg["contact_id"]
+                break
+
+    # Fetch contact details
+    if contact_id:
+        contact = fetch_contact(contact_id)
+        if contact:
+            contact_name = contact.get("display_name") or f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "Unknown"
+            ground_truth = contact.get("lifecycle")  # Lead or Customer
+
     # Skip if no ground truth and we require it
-    if require_ground_truth and ground_truth not in ["LEAD", "PATIENT"]:
+    if require_ground_truth and ground_truth not in ["Lead", "Customer"]:
         return None  # Skip - no ground truth set
 
     # Format messages for classifier
@@ -166,15 +179,12 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
 
         # Determine match
         ai_class = result.classification.upper()
-        if ai_class == "LEAD":
-            ai_is_lead = True
-        else:
-            ai_is_lead = False
+        ai_is_lead = ai_class == "LEAD"
 
-        if ground_truth == "LEAD":
+        if ground_truth == "Lead":
             human_is_lead = True
-        elif ground_truth == "PATIENT":
-            human_is_lead = False  # Converted, so was a lead
+        elif ground_truth == "Customer":
+            human_is_lead = False  # Converted customer
         else:
             human_is_lead = None
 
@@ -182,22 +192,23 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
             match = "Unknown"
         elif human_is_lead == ai_is_lead:
             match = "✓ Match"
-        elif ground_truth == "PATIENT" and ai_is_lead:
-            match = "⚠ Patient (was lead)"
+        elif ground_truth == "Customer" and ai_is_lead:
+            match = "⚠ Customer (was lead)"
         else:
             match = "✗ Mismatch"
 
         return {
             "chat_id": chat_id,
+            "message_count": len(messages),
             "channel": channel_type,
             "contact_name": contact_name,
+            "last_message_at": chat.get("last_message_at", ""),
             "ground_truth": ground_truth or "Unknown",
             "ai_classification": ai_class,
             "confidence": round(result.confidence, 2),
             "match": match,
             "reasoning": result.reasoning,
             "key_signals": ", ".join(result.key_signals) if result.key_signals else "",
-            "message_count": len(messages),
             "note": ""
         }
 
@@ -206,6 +217,7 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
             "chat_id": chat_id,
             "channel": channel_type,
             "contact_name": contact_name,
+            "last_message_at": chat.get("last_message_at", ""),
             "ground_truth": ground_truth or "Unknown",
             "ai_classification": "ERROR",
             "confidence": 0,
@@ -281,29 +293,27 @@ def process_organisation(org_id: str) -> pd.DataFrame:
 
     # Reorder columns
     columns = [
-        "chat_id", "channel", "contact_name", "ground_truth",
+        "chat_id", "channel", "contact_name", "last_message_at", "ground_truth",
         "ai_classification", "confidence", "match",
         "reasoning", "key_signals", "message_count", "note"
     ]
     df = df[columns]
 
-    # Order by ground_truth (LEAD first, then PATIENT)
-    ground_truth_order = {"LEAD": 0, "PATIENT": 1}
-    df["_sort"] = df["ground_truth"].map(ground_truth_order).fillna(2)
-    df = df.sort_values(["_sort", "confidence"], ascending=[True, False]).drop(columns=["_sort"])
+    # Sort by last_message_at (most recent first)
+    df = df.sort_values("last_message_at", ascending=False)
     df = df.reset_index(drop=True)
 
     # Summary
     total = len(df)
     matches = len(df[df["match"] == "✓ Match"])
     mismatches = len(df[df["match"] == "✗ Mismatch"])
-    patient_leads = len(df[df["match"] == "⚠ Patient (was lead)"])
+    customer_leads = len(df[df["match"] == "⚠ Customer (was lead)"])
 
     print(f"\n  📊 Summary:")
     print(f"     Processed: {processed} (skipped {skipped} without ground truth)")
     print(f"     Matches: {matches} ({matches/total*100:.1f}%)")
     print(f"     Mismatches: {mismatches} ({mismatches/total*100:.1f}%)")
-    print(f"     Patient (was lead): {patient_leads}")
+    print(f"     Customer (was lead): {customer_leads}")
 
     return df
 
