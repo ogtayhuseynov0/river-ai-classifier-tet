@@ -127,21 +127,10 @@ def load_contact(contact_id: str):
 
 @st.cache_data(ttl=60)
 def get_contact_id_from_chat(thread_id: str) -> str | None:
-    """Get contact_id directly from DB (prioritize INBOUND messages)."""
-    # Try INBOUND first
-    response = supabase.schema("crm").table("chat_messages").select(
+    """Get contact_id from chat_participants (non-self participant)."""
+    response = supabase.schema("crm").table("chat_participants").select(
         "contact_id"
-    ).eq("thread_id", thread_id).eq("direction", "INBOUND").not_.is_(
-        "contact_id", "null"
-    ).limit(1).execute()
-
-    if response.data and response.data[0].get("contact_id"):
-        return response.data[0]["contact_id"]
-
-    # Fallback to any message with contact_id
-    response = supabase.schema("crm").table("chat_messages").select(
-        "contact_id"
-    ).eq("thread_id", thread_id).not_.is_(
+    ).eq("thread_id", thread_id).eq("is_self", False).not_.is_(
         "contact_id", "null"
     ).limit(1).execute()
 

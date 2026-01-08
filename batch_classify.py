@@ -24,12 +24,15 @@ load_dotenv(env_path)
 
 # Organization IDs to process
 ORG_IDS = [
-    # "org_34Idi1MhESIDmZYFbS6ExbT2NyN",
-    "org_33m9zcPA8Ly0bwQTTRl6CdxFLsI",
+    "org_34Idi1MhESIDmZYFbS6ExbT2NyN",
+    # "org_33m9zcPA8Ly0bwQTTRl6CdxFLsI",
 ]
 
 # How many chats per organization (set to None for all)
 CHAT_LIMIT = 500
+
+# Run only on chats with lifecycle marked (Lead/Customer), or all chats
+RUN_ONLY_MARKED = True
 
 # Output file
 OUTPUT_FILE = f"classification_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -97,65 +100,101 @@ def fetch_contact(contact_id: str) -> dict:
     except:
         return None
 
-def fetch_contact_id_from_chat(thread_id: str) -> str | None:
-    """Get contact_id directly from DB (prioritize INBOUND messages)."""
-    # Try INBOUND first
-    response = supabase.schema("crm").table("chat_messages").select(
-        "contact_id"
-    ).eq("thread_id", thread_id).eq("direction", "INBOUND").not_.is_(
+def fetch_chats_with_contacts(org_id: str, limit: int = None, only_marked: bool = True) -> list[dict]:
+    """
+    Fetch chats with contact info in bulk (3 queries instead of N*2).
+    Returns list of dicts with: chat_id, channel_type, last_message_at, contact_name, lifecycle
+    """
+    # 1. Get all chats for org
+    query = supabase.schema("crm").table("chats").select(
+        "id, channel_type, last_message_at"
+    ).eq("org_id", org_id).eq("is_archived", False).eq("is_group", False).order(
+        "last_message_at", desc=True
+    )
+    if limit:
+        query = query.limit(limit)
+    chats = query.execute().data or []
+
+    if not chats:
+        return []
+
+    chat_ids = [c["id"] for c in chats]
+
+    # 2. Get all participants (non-self) for these chats
+    participants = supabase.schema("crm").table("chat_participants").select(
+        "thread_id, contact_id, display_name"
+    ).in_("thread_id", chat_ids).eq("is_self", False).not_.is_(
         "contact_id", "null"
-    ).limit(1).execute()
+    ).execute().data or []
 
-    if response.data and response.data[0].get("contact_id"):
-        return response.data[0]["contact_id"]
+    # Map thread_id -> participant info
+    thread_to_participant = {}
+    for p in participants:
+        if p["thread_id"] not in thread_to_participant:
+            thread_to_participant[p["thread_id"]] = p
 
-    # Fallback to any message with contact_id
-    response = supabase.schema("crm").table("chat_messages").select(
-        "contact_id"
-    ).eq("thread_id", thread_id).not_.is_(
-        "contact_id", "null"
-    ).limit(1).execute()
+    # 3. Get all contacts for these contact_ids
+    contact_ids = list(set(p["contact_id"] for p in participants if p.get("contact_id")))
 
-    if response.data and response.data[0].get("contact_id"):
-        return response.data[0]["contact_id"]
+    contacts_map = {}
+    if contact_ids:
+        contacts = supabase.schema("crm").table("contacts").select(
+            "id, first_name, last_name, display_name, lifecycle"
+        ).in_("id", contact_ids).execute().data or []
+        contacts_map = {c["id"]: c for c in contacts}
 
-    return None
+    # 4. Join and filter
+    result = []
+    for chat in chats:
+        chat_id = chat["id"]
+        participant = thread_to_participant.get(chat_id)
+
+        contact_name = "Unknown"
+        lifecycle = None
+
+        if participant:
+            contact_id = participant.get("contact_id")
+            if contact_id and contact_id in contacts_map:
+                contact = contacts_map[contact_id]
+                contact_name = contact.get("display_name") or f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or participant.get("display_name", "Unknown")
+                lifecycle = contact.get("lifecycle")
+            else:
+                contact_name = participant.get("display_name", "Unknown")
+
+        # Filter by lifecycle if only_marked
+        if only_marked and lifecycle not in ["Lead", "Customer"]:
+            continue
+
+        result.append({
+            "chat_id": chat_id,
+            "channel_type": chat.get("channel_type", "Unknown"),
+            "last_message_at": chat.get("last_message_at", ""),
+            "contact_name": contact_name,
+            "lifecycle": lifecycle
+        })
+
+    return result
 
 # ============================================================================
 # Classification logic
 # ============================================================================
 
-def classify_chat(chat: dict, org_name: str, services: list[str], require_ground_truth: bool = True) -> dict | None:
+def classify_chat(chat_info: dict, org_name: str, services: list[str]) -> dict | None:
     """Classify a single chat and return result row.
 
     Args:
-        chat: Chat data
+        chat_info: Pre-fetched chat data with contact info (from fetch_chats_with_contacts)
         org_name: Organization name
         services: List of services
-        require_ground_truth: If True, skip chats without ground_truth (LEAD/PATIENT)
 
     Returns:
         Result dict or None if skipped
     """
 
-    chat_id = chat["id"]
-    channel_type = chat.get("channel_type", "Unknown")
-
-    # Get contact directly from DB (single query with INBOUND priority)
-    contact = None
-    contact_name = "Unknown"
-    ground_truth = None
-
-    contact_id = fetch_contact_id_from_chat(chat_id)
-    if contact_id:
-        contact = fetch_contact(contact_id)
-        if contact:
-            contact_name = contact.get("display_name") or f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "Unknown"
-            ground_truth = contact.get("lifecycle")  # Lead or Customer
-
-    # Skip if no ground truth and we require it
-    if require_ground_truth and ground_truth not in ["Lead", "Customer"]:
-        return None  # Skip - no ground truth set
+    chat_id = chat_info["chat_id"]
+    channel_type = chat_info.get("channel_type", "Unknown")
+    contact_name = chat_info.get("contact_name", "Unknown")
+    ground_truth = chat_info.get("lifecycle")  # Already filtered if RUN_ONLY_MARKED
 
     # Now fetch messages (only for chats we'll actually process)
     messages = fetch_chat_messages(chat_id)
@@ -173,6 +212,13 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
 
     if not formatted_messages:
         return None  # Skip - no message content
+
+    # Format last 5 messages for Excel (most recent last)
+    last_5 = messages[-5:] if len(messages) >= 5 else messages
+    last_5_formatted = " ||| ".join([
+        f"[{msg.get('direction', '?')}] {msg.get('body', '')[:100]}"
+        for msg in last_5 if msg.get("body")
+    ])
 
     # Run classification
     try:
@@ -214,13 +260,14 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
             "message_count": len(messages),
             "channel": channel_type,
             "contact_name": contact_name,
-            "last_message_at": chat.get("last_message_at", ""),
+            "last_message_at": chat_info.get("last_message_at", ""),
             "ground_truth": ground_truth or "Unknown",
             "ai_classification": ai_class,
             "confidence": round(result.confidence, 2),
             "match": match,
             "reasoning": result.reasoning,
             "key_signals": ", ".join(result.key_signals) if result.key_signals else "",
+            "last_5_messages": last_5_formatted,
             "note": ""
         }
 
@@ -230,13 +277,14 @@ def classify_chat(chat: dict, org_name: str, services: list[str], require_ground
             "chat_id": chat_id,
             "channel": channel_type,
             "contact_name": contact_name,
-            "last_message_at": chat.get("last_message_at", ""),
+            "last_message_at": chat_info.get("last_message_at", ""),
             "ground_truth": ground_truth or "Unknown",
             "ai_classification": "ERROR",
             "confidence": 0,
             "match": "Error",
             "reasoning": str(e)[:200],
             "key_signals": "",
+            "last_5_messages": last_5_formatted,
             "message_count": len(messages) if messages else 0,
             "note": ""
         }
@@ -265,29 +313,28 @@ def process_organisation(org_id: str) -> pd.DataFrame:
     services = fetch_org_services(org_id)
     print(f"  📋 Services: {len(services)}")
 
-    # Fetch chats
-    chats = fetch_chats(org_id, limit=CHAT_LIMIT)
+    # Fetch chats with contact info (bulk query)
+    print(f"  🔍 Fetching chats (only_marked={RUN_ONLY_MARKED})...")
+    chats = fetch_chats_with_contacts(org_id, limit=CHAT_LIMIT, only_marked=RUN_ONLY_MARKED)
     print(f"  💬 Chats to process: {len(chats)}")
 
     if not chats:
-        print(f"  ⚠️ No chats found")
+        print(f"  ⚠️ No chats found" + (" with ground truth" if RUN_ONLY_MARKED else ""))
         return None
 
-    # Process each chat (only those with ground truth)
+    # Process each chat
     results = []
-    skipped = 0
     processed = 0
 
-    for i, chat in enumerate(chats, 1):
-        print(f"  [{i}/{len(chats)}] Checking chat {chat['id'][:8]}...", end=" ")
+    for i, chat_info in enumerate(chats, 1):
+        print(f"  [{i}/{len(chats)}] Classifying {chat_info['chat_id'][:8]}...", end=" ")
 
         start_time = time.time()
-        row = classify_chat(chat, org_name, services, require_ground_truth=True)
+        row = classify_chat(chat_info, org_name, services)
         elapsed = time.time() - start_time
 
         if row is None:
-            skipped += 1
-            print(f"⏭ Skipped (no ground truth)")
+            print(f"⏭ Skipped (no messages)")
             continue
 
         processed += 1
@@ -298,7 +345,7 @@ def process_organisation(org_id: str) -> pd.DataFrame:
         time.sleep(0.5)
 
     if not results:
-        print(f"  ⚠️ No chats with ground truth found (skipped {skipped})")
+        print(f"  ⚠️ No chats processed")
         return None
 
     # Create DataFrame
@@ -308,7 +355,7 @@ def process_organisation(org_id: str) -> pd.DataFrame:
     columns = [
         "clinic_name", "chat_id", "channel", "contact_name", "last_message_at", "ground_truth",
         "ai_classification", "confidence", "match",
-        "reasoning", "key_signals", "message_count", "note"
+        "reasoning", "key_signals", "last_5_messages", "message_count", "note"
     ]
     df = df[columns]
 
@@ -327,7 +374,7 @@ def process_organisation(org_id: str) -> pd.DataFrame:
     accuracy = matches / decided * 100 if decided > 0 else 0
 
     print(f"\n  📊 Summary:")
-    print(f"     Processed: {processed} (skipped {skipped} without ground truth)")
+    print(f"     Processed: {processed}")
     print(f"     Matches: {matches} ({accuracy:.1f}%)")
     print(f"     Mismatches: {mismatches}")
     print(f"     Customer (was lead): {customer_leads}")
@@ -338,7 +385,6 @@ def process_organisation(org_id: str) -> pd.DataFrame:
         "clinic_name": org_name,
         "total_chats": len(chats),
         "processed": processed,
-        "skipped": skipped,
         "matches": matches,
         "mismatches": mismatches,
         "customer_was_lead": customer_leads,
