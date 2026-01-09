@@ -56,7 +56,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# Initialize Supabase
+# Initialize Supabase (Source - CRM data)
 @st.cache_resource
 def get_supabase() -> Client:
     url = os.getenv("SUPABASE_URL")
@@ -68,12 +68,127 @@ def get_supabase() -> Client:
 
 supabase = get_supabase()
 
+# Initialize Supabase (Results - classification results storage)
+@st.cache_resource
+def get_results_supabase() -> Client:
+    url = os.getenv("RESULTS_SUPABASE_URL")
+    key = os.getenv("RESULTS_SUPABASE_KEY")
+    if not url or not key:
+        return None  # Results DB is optional
+    return create_client(url, key)
+
+results_db = get_results_supabase()
+
 # Initialize classifier
 @st.cache_resource
 def get_classifier():
     return LeadClassifier()
 
 classifier = get_classifier()
+
+# ============================================================================
+# Results Storage Functions
+# ============================================================================
+
+def save_classification_result(
+    org_id: str,
+    org_name: str,
+    chat_id: str,
+    chat_name: str,
+    contact_id: str,
+    contact_name: str,
+    channel: str,
+    ground_truth: str,
+    result,  # ClassificationResult
+    extracted,  # ExtractedData
+    message_count: int,
+    last_5_messages: str
+) -> str | None:
+    """Save classification result to results DB. Returns result ID."""
+    if not results_db:
+        return None
+
+    import json
+
+    data = {
+        "org_id": org_id,
+        "org_name": org_name,
+        "chat_id": chat_id,
+        "chat_name": chat_name,
+        "contact_id": contact_id,
+        "contact_name": contact_name,
+        "channel": channel,
+        "ground_truth": ground_truth,
+        "ai_classification": result.classification.upper(),
+        "confidence": result.confidence,
+        "match_status": None,  # Will be set based on comparison
+        "reasoning": result.reasoning,
+        "key_signals": result.key_signals,
+        "ext_first_name": extracted.first_name if extracted else None,
+        "ext_last_name": extracted.last_name if extracted else None,
+        "ext_date_of_birth": extracted.date_of_birth if extracted else None,
+        "ext_gender": extracted.gender if extracted else None,
+        "ext_city": extracted.city if extracted else None,
+        "ext_country": extracted.country if extracted else None,
+        "ext_language": extracted.language if extracted else None,
+        "ext_occupation": extracted.occupation if extracted else None,
+        "ext_matched_services": extracted.matched_services if extracted else None,
+        "ext_metadata": extracted.metadata if extracted else None,
+        "message_count": message_count,
+        "last_5_messages": last_5_messages,
+    }
+
+    # Calculate match status
+    if ground_truth == "Lead" and result.is_lead:
+        data["match_status"] = "Match"
+    elif ground_truth == "Customer" and not result.is_lead:
+        data["match_status"] = "Match"
+    elif ground_truth == "Customer" and result.is_lead:
+        data["match_status"] = "Customer (was lead)"
+    elif ground_truth and result.classification.upper() != "NEEDS_INFO":
+        data["match_status"] = "Mismatch"
+    elif result.classification.upper() == "NEEDS_INFO":
+        data["match_status"] = "Needs Info"
+
+    try:
+        # Upsert (update if exists, insert if not)
+        response = results_db.table("classification_results").upsert(
+            data, on_conflict="chat_id"
+        ).execute()
+
+        if response.data:
+            return response.data[0].get("id")
+    except Exception as e:
+        st.warning(f"Could not save result: {e}")
+
+    return None
+
+def update_result_note(result_id: str, note: str) -> bool:
+    """Update note for a classification result."""
+    if not results_db or not result_id:
+        return False
+
+    try:
+        results_db.table("classification_results").update(
+            {"note": note}
+        ).eq("id", result_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Could not save note: {e}")
+        return False
+
+def get_existing_result(chat_id: str) -> dict | None:
+    """Get existing result for a chat if it exists."""
+    if not results_db:
+        return None
+
+    try:
+        response = results_db.table("classification_results").select(
+            "id, note"
+        ).eq("chat_id", chat_id).single().execute()
+        return response.data
+    except:
+        return None
 
 # ============================================================================
 # Data Loading Functions
@@ -226,6 +341,12 @@ for chat in chats:
         st.session_state.selected_chat_id = chat["id"]
         st.session_state.selected_contact = None  # Will load on demand
         st.session_state.last_result = None
+        st.session_state.last_extracted = None
+        # Reset result tracking - will reload from DB
+        if "current_result_id" in st.session_state:
+            del st.session_state.current_result_id
+        if "current_note" in st.session_state:
+            del st.session_state.current_note
         st.rerun()
 
 # Load more button
@@ -247,6 +368,16 @@ if st.session_state.selected_chat_id:
             if msg.get("contact_id"):
                 st.session_state.selected_contact = load_contact(msg["contact_id"])
                 break
+
+    # Load existing result (for note and result_id)
+    if "current_result_id" not in st.session_state:
+        existing = get_existing_result(st.session_state.selected_chat_id)
+        if existing:
+            st.session_state.current_result_id = existing.get("id")
+            st.session_state.current_note = existing.get("note", "")
+        else:
+            st.session_state.current_result_id = None
+            st.session_state.current_note = ""
 
     with col1:
         st.markdown("### 💬 Conversation")
@@ -282,6 +413,39 @@ if st.session_state.selected_chat_id:
                             st.session_state.last_result = result
                             st.session_state.last_extracted = extracted
                             st.session_state.last_response_time = time.time() - start_time
+
+                            # Save result to results DB
+                            contact = st.session_state.get("selected_contact")
+                            contact_id = None
+                            contact_name = "Unknown"
+                            if contact:
+                                contact_id = contact.get("id")
+                                contact_name = contact.get("display_name") or f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip()
+
+                            # Format last 5 messages
+                            last_5 = messages[-5:] if len(messages) >= 5 else messages
+                            last_5_text = " ||| ".join([
+                                f"[{msg.get('direction', '?')}] {msg.get('body', '')[:100]}"
+                                for msg in last_5 if msg.get("body")
+                            ])
+
+                            result_id = save_classification_result(
+                                org_id=selected_org_id,
+                                org_name=selected_org_name,
+                                chat_id=st.session_state.selected_chat_id,
+                                chat_name="Chat",  # Could be improved
+                                contact_id=contact_id,
+                                contact_name=contact_name,
+                                channel="chat",
+                                ground_truth=contact.get("lifecycle") if contact else None,
+                                result=result,
+                                extracted=extracted,
+                                message_count=len(messages),
+                                last_5_messages=last_5_text
+                            )
+                            st.session_state.current_result_id = result_id
+                            st.session_state.current_note = ""
+
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {str(e)}")
@@ -309,6 +473,37 @@ if st.session_state.selected_chat_id:
 
     with col2:
         st.markdown("### 🎯 Classification Result")
+
+        # Note field (at top)
+        with st.container(border=True):
+            st.markdown("**📝 Notes**")
+            note_value = st.session_state.get("current_note", "")
+            new_note = st.text_area(
+                "Add notes about this classification",
+                value=note_value,
+                height=80,
+                key="note_input",
+                label_visibility="collapsed"
+            )
+
+            col_save, col_status = st.columns([1, 2])
+            with col_save:
+                if st.button("💾 Save Note", use_container_width=True):
+                    result_id = st.session_state.get("current_result_id")
+                    if result_id:
+                        if update_result_note(result_id, new_note):
+                            st.session_state.current_note = new_note
+                            st.success("Saved!")
+                    else:
+                        st.warning("Classify first to save notes")
+            with col_status:
+                if results_db:
+                    if st.session_state.get("current_result_id"):
+                        st.caption("✓ Result saved to DB")
+                    else:
+                        st.caption("○ Not yet classified")
+                else:
+                    st.caption("⚠ Results DB not configured")
 
         # Get actual lifecycle from contact
         contact = st.session_state.get("selected_contact")
