@@ -11,7 +11,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-from main import LeadClassifier, ConversationInput
+from main import LeadClassifier, ConversationInput, ExtractedData
 
 # Load environment
 env_path = Path(__file__).parent / ".env"
@@ -264,7 +264,7 @@ if st.session_state.selected_chat_id:
                         })
 
                 if formatted_messages:
-                    with st.spinner("Classifying..."):
+                    with st.spinner("Classifying & Extracting..."):
                         try:
                             start_time = time.time()
 
@@ -278,7 +278,9 @@ if st.session_state.selected_chat_id:
                             )
 
                             result = classifier.classify(conversation)
+                            extracted = classifier.extract(conversation)
                             st.session_state.last_result = result
+                            st.session_state.last_extracted = extracted
                             st.session_state.last_response_time = time.time() - start_time
                             st.rerun()
                         except Exception as e:
@@ -362,6 +364,33 @@ if st.session_state.selected_chat_id:
                     st.markdown("**🔍 Key Signals**")
                     for signal in result.key_signals:
                         st.markdown(f"• {signal}")
+
+            # Extracted Data
+            extracted = st.session_state.get("last_extracted")
+            if extracted:
+                with st.container(border=True):
+                    st.markdown("**📋 Extracted Data**")
+
+                    # Show non-null fields
+                    fields = [
+                        ("Name", f"{extracted.first_name or ''} {extracted.last_name or ''}".strip()),
+                        ("DOB", extracted.date_of_birth),
+                        ("Gender", extracted.gender),
+                        ("City", extracted.city),
+                        ("Country", extracted.country),
+                        ("Language", extracted.language),
+                        ("Occupation", extracted.occupation),
+                    ]
+
+                    for label, value in fields:
+                        if value:
+                            st.markdown(f"• **{label}:** {value}")
+
+                    # Metadata
+                    if extracted.metadata:
+                        st.markdown("**Metadata:**")
+                        for key, val in extracted.metadata.items():
+                            st.markdown(f"  • {key}: {val}")
 
             # Metrics
             st.markdown("---")

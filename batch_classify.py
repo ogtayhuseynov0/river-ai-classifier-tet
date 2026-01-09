@@ -3,6 +3,7 @@ Batch Classification Script
 Generates Excel report with classification results for multiple organizations
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-from main import LeadClassifier, ConversationInput
+from main import LeadClassifier, ConversationInput, ExtractedData
 
 # Load environment
 env_path = Path(__file__).parent / ".env"
@@ -232,6 +233,7 @@ def classify_chat(chat_info: dict, org_name: str, services: list[str]) -> dict |
         )
 
         result = classifier.classify(conversation)
+        extracted = classifier.extract(conversation)
 
         # Determine match
         ai_class = result.classification.upper()
@@ -268,6 +270,16 @@ def classify_chat(chat_info: dict, org_name: str, services: list[str]) -> dict |
             "reasoning": result.reasoning,
             "key_signals": ", ".join(result.key_signals) if result.key_signals else "",
             "last_5_messages": last_5_formatted,
+            # Extracted data
+            "ext_first_name": extracted.first_name,
+            "ext_last_name": extracted.last_name,
+            "ext_date_of_birth": extracted.date_of_birth,
+            "ext_gender": extracted.gender,
+            "ext_city": extracted.city,
+            "ext_country": extracted.country,
+            "ext_language": extracted.language,
+            "ext_occupation": extracted.occupation,
+            "ext_metadata": json.dumps(extracted.metadata) if extracted.metadata else "",
             "note": ""
         }
 
@@ -286,6 +298,16 @@ def classify_chat(chat_info: dict, org_name: str, services: list[str]) -> dict |
             "key_signals": "",
             "last_5_messages": last_5_formatted,
             "message_count": len(messages) if messages else 0,
+            # Extracted data (empty on error)
+            "ext_first_name": None,
+            "ext_last_name": None,
+            "ext_date_of_birth": None,
+            "ext_gender": None,
+            "ext_city": None,
+            "ext_country": None,
+            "ext_language": None,
+            "ext_occupation": None,
+            "ext_metadata": "",
             "note": ""
         }
 
@@ -355,7 +377,11 @@ def process_organisation(org_id: str) -> pd.DataFrame:
     columns = [
         "clinic_name", "chat_id", "channel", "contact_name", "last_message_at", "ground_truth",
         "ai_classification", "confidence", "match",
-        "reasoning", "key_signals", "last_5_messages", "message_count", "note"
+        "reasoning", "key_signals", "last_5_messages", "message_count",
+        # Extracted data
+        "ext_first_name", "ext_last_name", "ext_date_of_birth", "ext_gender",
+        "ext_city", "ext_country", "ext_language", "ext_occupation", "ext_metadata",
+        "note"
     ]
     df = df[columns]
 

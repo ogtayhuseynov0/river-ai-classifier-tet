@@ -4,10 +4,12 @@ Using Google AI Studio or Vertex AI
 OPTIMIZED VERSION - Fixed 15 second delay issues
 """
 
+from __future__ import annotations
+
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +32,27 @@ class ClassificationResult:
     reasoning: str
     key_signals: list[str]
     is_lead: bool
+
+
+@dataclass
+class ExtractedData:
+    """Extracted customer/lead data from conversation"""
+    first_name: str | None = None
+    last_name: str | None = None
+    middle_name: str | None = None
+    date_of_birth: str | None = None  # YYYY-MM-DD format
+    gender: str | None = None  # male, female, other
+    gender_identity: str | None = None
+    street: str | None = None
+    house_number: str | None = None
+    post_code: str | None = None
+    city: str | None = None
+    country: str | None = None
+    language: str | None = None  # ISO 639-1: en, fr, es, de, etc.
+    occupation: str | None = None
+    timezone: str | None = None  # e.g., Europe/London, America/New_York
+    locale: str | None = None  # e.g., en_US, fr_FR
+    metadata: dict | None = None  # Free-form key-value pairs
 
 
 @dataclass
@@ -67,6 +90,26 @@ Conversation ({source}):
 {formatted_messages}
 
 JSON: {{"classification":"lead|not_lead|needs_info","confidence":0.0-1.0,"reasoning":"brief","key_signals":["signal"]}}"""
+
+
+EXTRACTION_PROMPT = """Extract customer/lead information from this conversation. Only extract what is explicitly mentioned or clearly implied.
+
+Conversation:
+{formatted_messages}
+
+Extract these fields (use null if not found):
+- first_name, last_name, middle_name: Person's name
+- date_of_birth: Format YYYY-MM-DD
+- gender: male, female, or other
+- gender_identity: If specified differently
+- street, house_number, post_code, city, country: Address components
+- language: ISO 639-1 code (en, fr, es, de, etc.) - detect from conversation language
+- occupation: Job or profession
+- timezone: e.g., Europe/London, America/New_York
+- locale: e.g., en_US, fr_FR
+- metadata: Object with any other relevant info (phone, email, service_interested, appointment_preference, etc.)
+
+JSON: {{"first_name":null,"last_name":null,"middle_name":null,"date_of_birth":null,"gender":null,"gender_identity":null,"street":null,"house_number":null,"post_code":null,"city":null,"country":null,"language":null,"occupation":null,"timezone":null,"locale":null,"metadata":null}}"""
 
 
 # ============================================================================
@@ -317,6 +360,75 @@ class LeadClassifier:
             "reasoning": "Could not parse AI response",
             "key_signals": []
         }
+
+    def extract(self, conversation: ConversationInput) -> ExtractedData:
+        """
+        Extract customer/lead data from a conversation.
+
+        Args:
+            conversation: ConversationInput with conversation details
+
+        Returns:
+            ExtractedData with extracted fields
+        """
+        formatted_messages = self._format_messages(conversation.messages)
+        prompt = EXTRACTION_PROMPT.format(formatted_messages=formatted_messages)
+
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "topP": 0.8,
+                "maxOutputTokens": 512,
+                "responseMimeType": "application/json",
+            }
+        }
+
+        response = self.session.post(
+            self.url,
+            json=payload,
+            headers=self._get_headers(),
+            timeout=30
+        )
+
+        if not response.ok:
+            raise Exception(f"{response.status_code}: {response.text}")
+
+        data = response.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+
+        # Parse response
+        result = self._parse_json_response(text)
+
+        return ExtractedData(
+            first_name=result.get("first_name"),
+            last_name=result.get("last_name"),
+            middle_name=result.get("middle_name"),
+            date_of_birth=result.get("date_of_birth"),
+            gender=result.get("gender"),
+            gender_identity=result.get("gender_identity"),
+            street=result.get("street"),
+            house_number=result.get("house_number"),
+            post_code=result.get("post_code"),
+            city=result.get("city"),
+            country=result.get("country"),
+            language=result.get("language"),
+            occupation=result.get("occupation"),
+            timezone=result.get("timezone"),
+            locale=result.get("locale"),
+            metadata=result.get("metadata")
+        )
+
+    def classify_and_extract(self, conversation: ConversationInput) -> tuple[ClassificationResult, ExtractedData]:
+        """
+        Classify and extract data from a conversation in one call.
+
+        Returns:
+            Tuple of (ClassificationResult, ExtractedData)
+        """
+        classification = self.classify(conversation)
+        extracted = self.extract(conversation)
+        return classification, extracted
 
     def classify_batch(
         self, conversations: list[ConversationInput]
