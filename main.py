@@ -53,6 +53,7 @@ class ExtractedData:
     timezone: str | None = None  # e.g., Europe/London, America/New_York
     locale: str | None = None  # e.g., en_US, fr_FR
     metadata: dict | None = None  # Free-form key-value pairs
+    matched_services: list | None = None  # List of {"service": name, "confidence": 0-1}
 
 
 @dataclass
@@ -94,6 +95,9 @@ JSON: {{"classification":"lead|not_lead|needs_info","confidence":0.0-1.0,"reason
 
 EXTRACTION_PROMPT = """Extract customer/lead information from this conversation. Only extract what is explicitly mentioned or clearly implied.
 
+Available Services:
+{formatted_services}
+
 Conversation:
 {formatted_messages}
 
@@ -107,9 +111,10 @@ Extract these fields (use null if not found):
 - occupation: Job or profession
 - timezone: e.g., Europe/London, America/New_York
 - locale: e.g., en_US, fr_FR
-- metadata: Object with any other relevant info (phone, email, service_interested, appointment_preference, etc.)
+- metadata: Object with any other relevant info (phone, email, appointment_preference, etc.)
+- matched_services: Array of services from the list above that customer is interested in. Format: [{{"service":"exact service name from list","confidence":0.0-1.0}}]
 
-JSON: {{"first_name":null,"last_name":null,"middle_name":null,"date_of_birth":null,"gender":null,"gender_identity":null,"street":null,"house_number":null,"post_code":null,"city":null,"country":null,"language":null,"occupation":null,"timezone":null,"locale":null,"metadata":null}}"""
+JSON: {{"first_name":null,"last_name":null,"middle_name":null,"date_of_birth":null,"gender":null,"gender_identity":null,"street":null,"house_number":null,"post_code":null,"city":null,"country":null,"language":null,"occupation":null,"timezone":null,"locale":null,"metadata":null,"matched_services":null}}"""
 
 
 # ============================================================================
@@ -372,7 +377,11 @@ class LeadClassifier:
             ExtractedData with extracted fields
         """
         formatted_messages = self._format_messages(conversation.messages)
-        prompt = EXTRACTION_PROMPT.format(formatted_messages=formatted_messages)
+        formatted_services = self._format_services(conversation.services) if conversation.services else "No services listed"
+        prompt = EXTRACTION_PROMPT.format(
+            formatted_messages=formatted_messages,
+            formatted_services=formatted_services
+        )
 
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -416,7 +425,8 @@ class LeadClassifier:
             occupation=result.get("occupation"),
             timezone=result.get("timezone"),
             locale=result.get("locale"),
-            metadata=result.get("metadata")
+            metadata=result.get("metadata"),
+            matched_services=result.get("matched_services")
         )
 
     def classify_and_extract(self, conversation: ConversationInput) -> tuple[ClassificationResult, ExtractedData]:

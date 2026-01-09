@@ -279,6 +279,7 @@ def classify_chat(chat_info: dict, org_name: str, services: list[str]) -> dict |
             "ext_country": extracted.country,
             "ext_language": extracted.language,
             "ext_occupation": extracted.occupation,
+            "ext_matched_services": ", ".join([s.get("service", "") for s in extracted.matched_services]) if extracted.matched_services else "",
             "ext_metadata": json.dumps(extracted.metadata) if extracted.metadata else "",
             "note": ""
         }
@@ -307,6 +308,7 @@ def classify_chat(chat_info: dict, org_name: str, services: list[str]) -> dict |
             "ext_country": None,
             "ext_language": None,
             "ext_occupation": None,
+            "ext_matched_services": "",
             "ext_metadata": "",
             "note": ""
         }
@@ -380,7 +382,8 @@ def process_organisation(org_id: str) -> pd.DataFrame:
         "reasoning", "key_signals", "last_5_messages", "message_count",
         # Extracted data
         "ext_first_name", "ext_last_name", "ext_date_of_birth", "ext_gender",
-        "ext_city", "ext_country", "ext_language", "ext_occupation", "ext_metadata",
+        "ext_city", "ext_country", "ext_language", "ext_occupation",
+        "ext_matched_services", "ext_metadata",
         "note"
     ]
     df = df[columns]

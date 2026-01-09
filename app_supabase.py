@@ -87,9 +87,9 @@ def load_organisations():
 
 @st.cache_data(ttl=300)
 def load_org_services(org_id: str):
-    """Load services for an organisation."""
+    """Load services for an organisation (with price if available)."""
     response = supabase.table("organisation_services").select(
-        "id, name, description, category_id"
+        "id, name, description, category_id, price, currency"
     ).eq("org_id", org_id).execute()
     return response.data
 
@@ -368,6 +368,24 @@ if st.session_state.selected_chat_id:
             # Extracted Data
             extracted = st.session_state.get("last_extracted")
             if extracted:
+                # Matched Services (prominent display)
+                if extracted.matched_services:
+                    with st.container(border=True):
+                        st.markdown("**🎯 Matched Services**")
+                        # Build service lookup for prices
+                        service_lookup = {s["name"]: s for s in services}
+                        for match in extracted.matched_services:
+                            svc_name = match.get("service", "")
+                            confidence = match.get("confidence", 0)
+                            svc_info = service_lookup.get(svc_name, {})
+                            price = svc_info.get("price")
+                            currency = svc_info.get("currency", "")
+
+                            if price:
+                                st.markdown(f"• **{svc_name}** - {currency} {price} ({confidence:.0%} match)")
+                            else:
+                                st.markdown(f"• **{svc_name}** ({confidence:.0%} match)")
+
                 with st.container(border=True):
                     st.markdown("**📋 Extracted Data**")
 
