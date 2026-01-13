@@ -257,7 +257,7 @@ else:
         if st.button("🚀 Classify This Conversation", type="primary", use_container_width=True):
             conv = dataset.conversations[st.session_state.get("selected_conv_idx", 0)]
 
-            with st.spinner("Classifying..."):
+            with st.spinner("Classifying & Extracting..."):
                 try:
                     start_time = time.time()
 
@@ -271,7 +271,9 @@ else:
                     )
 
                     result = classifier.classify(conversation_input)
+                    extracted = classifier.extract(conversation_input)
                     st.session_state.last_result = result
+                    st.session_state.last_extracted = extracted
                     st.session_state.last_response_time = time.time() - start_time
                     st.rerun()
 
@@ -321,6 +323,43 @@ else:
                     st.markdown("**🔍 Key Signals**")
                     for signal in result.key_signals:
                         st.markdown(f"• {signal}")
+
+            # Extracted Data
+            extracted = st.session_state.get("last_extracted")
+            if extracted:
+                # Matched Services
+                if extracted.matched_services:
+                    with st.container(border=True):
+                        st.markdown("**🎯 Matched Services**")
+                        service_lookup = {s.name: s for s in dataset.business.services}
+                        for match in extracted.matched_services:
+                            svc_name = match.get("service", "")
+                            confidence = match.get("confidence", 0)
+                            svc_info = service_lookup.get(svc_name)
+                            if svc_info:
+                                st.markdown(f"• **{svc_name}** - {svc_info.currency} {svc_info.price} ({confidence:.0%} match)")
+                            else:
+                                st.markdown(f"• **{svc_name}** ({confidence:.0%} match)")
+
+                with st.container(border=True):
+                    st.markdown("**📋 Extracted Data**")
+                    fields = [
+                        ("Name", f"{extracted.first_name or ''} {extracted.last_name or ''}".strip()),
+                        ("DOB", extracted.date_of_birth),
+                        ("Gender", extracted.gender),
+                        ("City", extracted.city),
+                        ("Country", extracted.country),
+                        ("Language", extracted.language),
+                        ("Occupation", extracted.occupation),
+                    ]
+                    for label, value in fields:
+                        if value:
+                            st.markdown(f"• **{label}:** {value}")
+
+                    if extracted.metadata:
+                        st.markdown("**Metadata:**")
+                        for key, val in extracted.metadata.items():
+                            st.markdown(f"  • {key}: {val}")
 
             # Metrics
             st.markdown("---")

@@ -100,16 +100,48 @@ class SyntheticDataGenerator:
         report_progress("Generating contacts...")
         contacts = self._generate_contacts(config.num_contacts, business.business_type, config.personas)
 
-        # Step 3: Generate conversations
+        # Step 3: Generate conversations with proper ground truth distribution
         conversations = []
+
+        # Pre-calculate how many of each ground truth we need
+        num_leads = int(config.num_conversations * config.lead_ratio)
+        num_not_leads = int(config.num_conversations * config.not_lead_ratio)
+        num_needs_info = config.num_conversations - num_leads - num_not_leads
+
+        # Create a shuffled list of ground truths
+        ground_truths = (
+            ["lead"] * num_leads +
+            ["not_lead"] * num_not_leads +
+            ["needs_info"] * num_needs_info
+        )
+        random.shuffle(ground_truths)
+
+        # Map ground truth to suitable personas
+        persona_for_ground_truth = {
+            "lead": ["serious_lead", "curious_lead", "price_shopper"],
+            "not_lead": ["spam", "wrong_number"],
+            "needs_info": ["vague"]
+        }
+
         for i in range(config.num_conversations):
             report_progress(f"Generating conversation {i + 1}/{config.num_conversations}...")
 
-            # Select contact, channel, and determine ground truth
-            contact = random.choice(contacts)
+            # Get predetermined ground truth for this conversation
+            ground_truth = ground_truths[i] if i < len(ground_truths) else "lead"
+
+            # Pick a persona that matches this ground truth
+            suitable_personas = persona_for_ground_truth.get(ground_truth, ["curious_lead"])
+            chosen_persona = random.choice(suitable_personas)
+
+            # Find a contact with matching persona, or pick any and override
+            matching_contacts = [c for c in contacts if c.persona in suitable_personas]
+            if matching_contacts:
+                contact = random.choice(matching_contacts)
+            else:
+                contact = random.choice(contacts)
+
             channel = self._weighted_choice(config.channels)
-            ground_truth = config.get_ground_truth_for_persona(contact.persona)
-            scenario = config.get_scenario_for_persona(contact.persona)
+            scenario = config.get_scenario_for_persona(chosen_persona)
             num_messages = random.randint(config.min_messages, config.max_messages)
 
             try:
@@ -119,7 +151,8 @@ class SyntheticDataGenerator:
                     channel=channel,
                     ground_truth=ground_truth,
                     scenario_type=scenario,
-                    num_messages=num_messages
+                    num_messages=num_messages,
+                    persona=chosen_persona
                 )
                 conversations.append(conv)
             except Exception as e:
@@ -196,10 +229,14 @@ class SyntheticDataGenerator:
         channel: str,
         ground_truth: str,
         scenario_type: str,
-        num_messages: int
+        num_messages: int,
+        persona: str = None
     ) -> SyntheticConversation:
         """Generate a single conversation."""
         services_list = ", ".join(s.name for s in business.services[:5])
+
+        # Use provided persona or fall back to contact's persona
+        actual_persona = persona or contact.persona
 
         prompt = get_conversation_prompt(
             channel=channel,
@@ -207,7 +244,7 @@ class SyntheticDataGenerator:
             business_type=business.business_type,
             services_list=services_list,
             contact_name=contact.get_display_name(),
-            persona=contact.persona,
+            persona=actual_persona,
             ground_truth=ground_truth,
             scenario_type=scenario_type,
             num_messages=num_messages
