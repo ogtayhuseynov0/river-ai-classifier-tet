@@ -3,6 +3,7 @@ Synthetic Data Generator & Classifier Testing UI
 Generate synthetic business data and test the AI classifier
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,9 +17,14 @@ import io
 from datetime import datetime
 
 import streamlit as st
+from dotenv import load_dotenv
 
 from synthetic import SyntheticDataGenerator, GenerationConfig
 from main import LeadClassifier, ConversationInput
+
+# Load environment
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(env_path)
 
 # Page config
 st.set_page_config(
@@ -26,6 +32,38 @@ st.set_page_config(
     page_icon="🧪",
     layout="wide"
 )
+
+# ============================================================================
+# Password Protection (optional - set APP_PASSWORD in .env)
+# ============================================================================
+def check_password():
+    """Simple password protection."""
+    app_password = os.getenv("APP_PASSWORD")
+
+    # Skip if no password set
+    if not app_password:
+        return True
+
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        return True
+
+    st.title("🔐 Login Required")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        if password == app_password:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password")
+
+    return False
+
+if not check_password():
+    st.stop()
 
 st.title("🧪 Synthetic Data Generator")
 st.markdown("Generate synthetic business data and test the AI classifier")
