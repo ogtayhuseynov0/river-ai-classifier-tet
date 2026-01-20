@@ -1,0 +1,36 @@
+%% Organization DNA/Style Analysis
+%% Analyzes past business responses to extract communication style
+
+flowchart LR
+    subgraph Input["Historical Data"]
+        HIST[(Past Business Responses)]
+    end
+
+    subgraph Analyzer["DNA Analyzer"]
+        FETCH[Fetch Last N Responses]
+        ANALYZE[AI Analyze Patterns]
+    end
+
+    LLM[Gemini AI]
+
+    subgraph Output["Extracted Style"]
+        TONE[Tone & Voice]
+        PHRASES[Common Phrases]
+        RULES[Style Rules]
+    end
+
+    OS[(organization_style)]
+
+    HIST --> FETCH
+    FETCH --> ANALYZE
+    ANALYZE <--> LLM
+    ANALYZE --> TONE
+    ANALYZE --> PHRASES
+    ANALYZE --> RULES
+    TONE --> OS
+    PHRASES --> OS
+    RULES --> OS
+
+    style LLM fill:#4285F4,color:#fff
+    style OS fill:#9C27B0,color:#fff
+    style HIST fill:#3ECF8E,color:#000

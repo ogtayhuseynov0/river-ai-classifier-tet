@@ -1,48 +1,49 @@
-flowchart TB
-    subgraph "Existing Platform"
+flowchart LR
+    subgraph Platform["Existing Platform"]
         SP[(Supabase DB)]
-        WH[Database Webhook]
+        WH[Webhook]
+        CLIENT[Client App]
     end
 
-    subgraph "AI Classifier Service"
-        subgraph "Cloud Run - API"
-            API[FastAPI Webhook Receiver]
-            CE[Classification Endpoint]
-        end
-
-        subgraph "Cloud Memorystore"
-            RQ[Redis Queue BullMQ]
-            RC[Redis Cache Conversation Context]
-        end
-
-        subgraph "Cloud Run - Worker"
-            W[Queue Worker]
-            JP[Job Processor]
-            CL[Classifier Service]
-        end
+    subgraph API["Cloud Run - API"]
+        RECV[Webhook Receiver]
+        GEN_EP[Generate Response API]
     end
 
-    subgraph "Google Cloud AI"
-        VA[Vertex AI Gemini 1.5 Flash]
+    subgraph Cache["Redis"]
+        RQ[Queue]
+        RC[Cache]
     end
 
-    SP -->|New Message Event| WH
-    WH -->|POST /webhooks/supabase| API
-    API -->|Add Job| RQ
-    RQ -->|Pull Job| W
-    W -->|Check Cache| RC
-    RC -.->|Cache Miss| SP
-    W --> JP
-    JP --> CL
-    CL -->|Classify| VA
-    VA -->|Result| CL
-    CL -->|Update Cache| RC
-    CL -->|Write Result| SP
-    CE -->|Manual Classify| CL
+    subgraph Worker["Cloud Run - Worker"]
+        PROC[Processor]
+        CL[Classifier]
+        RG[Response Gen]
+    end
+
+    VA[Gemini AI]
+
+    %% Classification + Auto-Response Flow
+    SP -->|Event| WH
+    WH --> RECV
+    RECV --> RQ
+    RQ --> PROC
+    PROC --> CL
+    CL <-->|Classify + Extract| VA
+    CL --> RC
+    CL -->|Result| SP
+    PROC -->|If Auto-Reply| RG
+    RG <-->|Generate| VA
+    RG -->|Send Response| SP
+
+    %% Manual Response Generation
+    CLIENT --> GEN_EP
+    GEN_EP --> RG
+    GEN_EP -->|Response| CLIENT
 
     style SP fill:#3ECF8E,color:#000
     style VA fill:#4285F4,color:#fff
     style RQ fill:#DC382D,color:#fff
     style RC fill:#DC382D,color:#fff
-    style API fill:#009688,color:#fff
-    style W fill:#009688,color:#fff
+    style GEN_EP fill:#FF9800,color:#000
+    style RG fill:#FF9800,color:#000
