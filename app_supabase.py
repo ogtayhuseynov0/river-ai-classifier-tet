@@ -342,6 +342,7 @@ for chat in chats:
         st.session_state.selected_contact = None  # Will load on demand
         st.session_state.last_result = None
         st.session_state.last_extracted = None
+        st.session_state.generated_response = None  # Clear generated response
         # Reset result tracking - will reload from DB
         if "current_result_id" in st.session_state:
             del st.session_state.current_result_id
@@ -468,6 +469,52 @@ if st.session_state.selected_chat_id:
                     else:
                         st.markdown("**🏥 Business**")
                     st.markdown(body)
+            # Generate AI Response button
+            st.markdown("---")
+            if st.button("✨ Generate AI Response", use_container_width=True):
+                # Format messages for response generator
+                formatted_messages = []
+                for msg in messages:
+                    if msg.get("body"):
+                        formatted_messages.append({
+                            "role": "customer" if msg.get("direction") == "INBOUND" else "business",
+                            "content": msg.get("body", "")
+                        })
+
+                if formatted_messages:
+                    with st.spinner("Generating response..."):
+                        try:
+                            from response_generator import generate_response
+
+                            # Get channel from chat
+                            chat_info = next((c for c in chats if c["id"] == st.session_state.selected_chat_id), {})
+                            channel = chat_info.get("channel_type", "chat").lower()
+
+                            response_text = generate_response(
+                                messages=formatted_messages,
+                                business_name=selected_org_name,
+                                business_type="medical practice",
+                                services=service_names,
+                                channel=channel
+                            )
+                            st.session_state.generated_response = response_text
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {str(e)}")
+
+            # Show generated response
+            if st.session_state.get("generated_response"):
+                with st.container(border=True):
+                    st.markdown("**✨ Suggested Response:**")
+                    st.info(st.session_state.generated_response)
+
+                    # Copy button hint
+                    st.caption("Copy the response above to send to customer")
+
+                    if st.button("🗑️ Clear", key="clear_response"):
+                        del st.session_state.generated_response
+                        st.rerun()
+
         else:
             st.info("No messages in this chat")
 
