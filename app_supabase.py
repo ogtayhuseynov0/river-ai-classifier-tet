@@ -452,25 +452,9 @@ if st.session_state.selected_chat_id:
                             st.error(f"Error: {str(e)}")
 
         st.markdown(f"**{len(messages) if messages else 0} messages**")
-        st.markdown("---")
 
-        # Display messages
+        # Generate AI Response button at TOP
         if messages:
-            for msg in messages:
-                is_inbound = msg.get("direction") == "INBOUND"
-                body = msg.get("body", "")
-
-                if not body:
-                    continue
-
-                with st.container(border=True):
-                    if is_inbound:
-                        st.markdown("**👤 Customer**")
-                    else:
-                        st.markdown("**🏥 Business**")
-                    st.markdown(body)
-            # Generate AI Response button
-            st.markdown("---")
             if st.button("✨ Generate AI Response", use_container_width=True):
                 # Format messages for response generator
                 formatted_messages = []
@@ -502,18 +486,50 @@ if st.session_state.selected_chat_id:
                         except Exception as e:
                             st.error(f"Error: {str(e)}")
 
-            # Show generated response
+            # Show generated response at TOP
             if st.session_state.get("generated_response"):
                 with st.container(border=True):
                     st.markdown("**✨ Suggested Response:**")
-                    st.info(st.session_state.generated_response)
-
-                    # Copy button hint
-                    st.caption("Copy the response above to send to customer")
-
+                    st.success(st.session_state.generated_response)
                     if st.button("🗑️ Clear", key="clear_response"):
                         del st.session_state.generated_response
                         st.rerun()
+
+        st.markdown("---")
+
+        # Display messages (newest first)
+        if messages:
+            from datetime import datetime
+
+            # Reverse to show newest first
+            for msg in reversed(messages):
+                is_inbound = msg.get("direction") == "INBOUND"
+                body = msg.get("body", "")
+
+                if not body:
+                    continue
+
+                # Parse datetime
+                msg_time = msg.get("sent_at") or msg.get("received_at") or msg.get("created_at")
+                time_str = ""
+                if msg_time:
+                    try:
+                        dt = datetime.fromisoformat(msg_time.replace("Z", "+00:00"))
+                        time_str = dt.strftime("%b %d, %H:%M")
+                    except:
+                        time_str = ""
+
+                with st.container(border=True):
+                    col_role, col_time = st.columns([3, 1])
+                    with col_role:
+                        if is_inbound:
+                            st.markdown("**👤 Customer**")
+                        else:
+                            st.markdown("**🏥 Business**")
+                    with col_time:
+                        if time_str:
+                            st.caption(time_str)
+                    st.markdown(body)
 
         else:
             st.info("No messages in this chat")
