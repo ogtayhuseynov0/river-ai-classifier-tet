@@ -24,7 +24,7 @@ BUSINESS SERVICES:
 
 CONVERSATION HISTORY:
 {conversation_history}
-
+{brand_dna_section}
 Generate a short, friendly response to the customer's last message.
 
 RULES:
@@ -41,6 +41,113 @@ RULES:
 IMPORTANT: Your response MUST be in the same language as the customer's messages. If customer writes in Spanish, respond in Spanish. If in German, respond in German. Etc.
 
 Respond with ONLY the message text, no quotes or explanation."""
+
+
+# Pre-defined Brand DNA profiles
+BRAND_DNA_PROFILES = {
+    "friendly_casual": {
+        "name": "Friendly & Casual",
+        "tone": "warm, friendly, casual",
+        "personality": "like a helpful friend",
+        "preferred_phrases": ["Hey!", "Happy to help!", "Sounds great!", "No worries!", "Let me know!"],
+        "avoid_phrases": ["Dear Sir/Madam", "Please be advised", "Kindly", "Per our policy"],
+        "use_emojis": True,
+        "max_length": "short (1-2 sentences)",
+        "rules": [
+            "Use casual greetings (Hey, Hi there)",
+            "Add friendly emojis occasionally",
+            "Keep it conversational and warm"
+        ]
+    },
+    "professional_formal": {
+        "name": "Professional & Formal",
+        "tone": "professional, polished, formal",
+        "personality": "courteous business representative",
+        "preferred_phrases": ["Thank you for reaching out", "We would be delighted to assist", "Please let us know", "We appreciate your interest"],
+        "avoid_phrases": ["Hey", "No prob", "Sure thing", "Gonna", "Wanna"],
+        "use_emojis": False,
+        "max_length": "medium (2-3 sentences)",
+        "rules": [
+            "Use formal greetings (Dear, Hello)",
+            "Avoid contractions when possible",
+            "Maintain professional distance"
+        ]
+    },
+    "luxury_concierge": {
+        "name": "Luxury Concierge",
+        "tone": "elegant, exclusive, sophisticated",
+        "personality": "high-end concierge service",
+        "preferred_phrases": ["It would be our pleasure", "We look forward to welcoming you", "At your convenience", "Exceptional experience"],
+        "avoid_phrases": ["Cheap", "Deal", "Discount", "ASAP", "No problem"],
+        "use_emojis": False,
+        "max_length": "medium (2-3 sentences)",
+        "rules": [
+            "Emphasize exclusivity and personalized service",
+            "Use refined, elegant language",
+            "Make customer feel valued and special"
+        ]
+    },
+    "quick_efficient": {
+        "name": "Quick & Efficient",
+        "tone": "direct, efficient, helpful",
+        "personality": "busy professional who values time",
+        "preferred_phrases": ["Got it!", "Done.", "Here's what you need:", "Quick answer:"],
+        "avoid_phrases": ["I hope this email finds you well", "Just checking in", "As per my last message"],
+        "use_emojis": False,
+        "max_length": "very short (1 sentence)",
+        "rules": [
+            "Get straight to the point",
+            "No fluff or unnecessary pleasantries",
+            "Answer the question directly"
+        ]
+    },
+    "empathetic_caring": {
+        "name": "Empathetic & Caring",
+        "tone": "warm, understanding, supportive",
+        "personality": "caring healthcare provider",
+        "preferred_phrases": ["I understand", "We're here for you", "Take your time", "Your comfort is our priority", "Don't hesitate to ask"],
+        "avoid_phrases": ["You must", "You have to", "Policy requires", "Unfortunately"],
+        "use_emojis": False,
+        "max_length": "medium (2-3 sentences)",
+        "rules": [
+            "Acknowledge customer feelings",
+            "Show genuine care and concern",
+            "Be reassuring and supportive"
+        ]
+    }
+}
+
+
+def format_brand_dna_prompt(brand_dna: dict) -> str:
+    """Format brand DNA into prompt section."""
+    if not brand_dna:
+        return ""
+
+    lines = [
+        "\nBRAND VOICE & STYLE:",
+        f"- Tone: {brand_dna.get('tone', 'professional')}",
+        f"- Personality: {brand_dna.get('personality', 'helpful')}",
+        f"- Response length: {brand_dna.get('max_length', 'short')}",
+    ]
+
+    if brand_dna.get('use_emojis'):
+        lines.append("- Use emojis: Yes, occasionally")
+    else:
+        lines.append("- Use emojis: No")
+
+    if brand_dna.get('preferred_phrases'):
+        lines.append(f"- Use phrases like: {', '.join(brand_dna['preferred_phrases'][:3])}")
+
+    if brand_dna.get('avoid_phrases'):
+        lines.append(f"- AVOID phrases like: {', '.join(brand_dna['avoid_phrases'][:3])}")
+
+    if brand_dna.get('rules'):
+        lines.append("- Style rules:")
+        for rule in brand_dna.get('rules', [])[:3]:
+            lines.append(f"  • {rule}")
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 class ResponseGenerator:
@@ -74,7 +181,8 @@ class ResponseGenerator:
         business_name: str,
         business_type: str,
         services: list[str],
-        channel: str = "chat"
+        channel: str = "chat",
+        brand_dna: dict = None
     ) -> str:
         """
         Generate a response to the conversation.
@@ -85,6 +193,7 @@ class ResponseGenerator:
             business_type: Type of business (e.g., "dental clinic")
             services: List of service names
             channel: Channel type for tone adjustment
+            brand_dna: Optional brand DNA/style dictionary
 
         Returns:
             Generated response text
@@ -101,12 +210,16 @@ class ResponseGenerator:
         # Format services
         services_list = "\n".join(f"- {svc}" for svc in services[:15])
 
+        # Format brand DNA section
+        brand_dna_section = format_brand_dna_prompt(brand_dna)
+
         # Build prompt
         prompt = RESPONSE_PROMPT.format(
             business_name=business_name,
             business_type=business_type,
             services_list=services_list,
             conversation_history=conversation_history,
+            brand_dna_section=brand_dna_section,
             channel=channel
         )
 
@@ -161,7 +274,8 @@ def generate_response(
     business_name: str,
     business_type: str,
     services: list[str],
-    channel: str = "chat"
+    channel: str = "chat",
+    brand_dna: dict = None
 ) -> str:
     """
     Convenience function to generate a response.
@@ -172,6 +286,7 @@ def generate_response(
         business_type: Type of business
         services: List of services
         channel: Channel for tone adjustment
+        brand_dna: Optional brand DNA/style dictionary
 
     Returns:
         Generated response text
@@ -182,5 +297,6 @@ def generate_response(
         business_name=business_name,
         business_type=business_type,
         services=services,
-        channel=channel
+        channel=channel,
+        brand_dna=brand_dna
     )

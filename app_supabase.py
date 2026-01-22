@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 from main import LeadClassifier, ConversationInput, ExtractedData
+from response_generator import generate_response, BRAND_DNA_PROFILES
 
 # Load environment
 env_path = Path(__file__).parent / ".env"
@@ -453,8 +454,31 @@ if st.session_state.selected_chat_id:
 
         st.markdown(f"**{len(messages) if messages else 0} messages**")
 
-        # Generate AI Response button at TOP
+        # Generate AI Response section
         if messages:
+            # Brand DNA selector
+            dna_options = ["None (Default)"] + [p["name"] for p in BRAND_DNA_PROFILES.values()]
+            dna_keys = [None] + list(BRAND_DNA_PROFILES.keys())
+
+            selected_dna_name = st.selectbox(
+                "Brand Voice",
+                dna_options,
+                index=0,
+                help="Select a brand voice style for the AI response"
+            )
+            selected_dna_key = dna_keys[dna_options.index(selected_dna_name)]
+            selected_dna = BRAND_DNA_PROFILES.get(selected_dna_key) if selected_dna_key else None
+
+            # Show DNA preview
+            if selected_dna:
+                with st.expander("📋 Brand Voice Details", expanded=False):
+                    st.markdown(f"**Tone:** {selected_dna.get('tone')}")
+                    st.markdown(f"**Personality:** {selected_dna.get('personality')}")
+                    if selected_dna.get('preferred_phrases'):
+                        st.markdown(f"**Use phrases:** {', '.join(selected_dna['preferred_phrases'][:3])}")
+                    if selected_dna.get('avoid_phrases'):
+                        st.markdown(f"**Avoid:** {', '.join(selected_dna['avoid_phrases'][:3])}")
+
             if st.button("✨ Generate AI Response", use_container_width=True):
                 # Format messages for response generator
                 formatted_messages = []
@@ -468,8 +492,6 @@ if st.session_state.selected_chat_id:
                 if formatted_messages:
                     with st.spinner("Generating response..."):
                         try:
-                            from response_generator import generate_response
-
                             # Get channel from chat
                             chat_info = next((c for c in chats if c["id"] == st.session_state.selected_chat_id), {})
                             channel = chat_info.get("channel_type", "chat").lower()
@@ -479,7 +501,8 @@ if st.session_state.selected_chat_id:
                                 business_name=selected_org_name,
                                 business_type="medical practice",
                                 services=service_names,
-                                channel=channel
+                                channel=channel,
+                                brand_dna=selected_dna
                             )
                             st.session_state.generated_response = response_text
                             st.rerun()
