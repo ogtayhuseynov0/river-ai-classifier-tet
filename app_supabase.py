@@ -12,7 +12,15 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 from main import LeadClassifier, ConversationInput, ExtractedData
-from response_generator import generate_response, BRAND_DNA_PROFILES
+
+# Import response generator (optional - may fail if GEMINI_API_KEY not set)
+try:
+    from response_generator import generate_response, BRAND_DNA_PROFILES
+    RESPONSE_GEN_AVAILABLE = True
+except Exception as e:
+    RESPONSE_GEN_AVAILABLE = False
+    BRAND_DNA_PROFILES = {}
+    print(f"Response generator not available: {e}")
 
 # Load environment
 env_path = Path(__file__).parent / ".env"
@@ -455,7 +463,7 @@ if st.session_state.selected_chat_id:
         st.markdown(f"**{len(messages) if messages else 0} messages**")
 
         # Generate AI Response section
-        if messages:
+        if messages and RESPONSE_GEN_AVAILABLE:
             # Brand DNA selector
             dna_options = ["None (Default)"] + [p["name"] for p in BRAND_DNA_PROFILES.values()]
             dna_keys = [None] + list(BRAND_DNA_PROFILES.keys())
