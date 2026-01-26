@@ -172,15 +172,29 @@ def save_classification_result(
 
     return None
 
-def update_result_note(result_id: str, note: str) -> bool:
-    """Update note for a classification result."""
+def update_result_note(
+    result_id: str,
+    note: str,
+    ai_response: str = None,
+    brand_dna_key: str = None,
+    brand_dna_name: str = None
+) -> bool:
+    """Update note and AI response for a classification result."""
     if not results_db or not result_id:
         return False
 
     try:
-        results_db.table("classification_results").update(
-            {"note": note}
-        ).eq("id", result_id).execute()
+        data = {"note": note}
+
+        # Add AI response fields if provided
+        if ai_response is not None:
+            data["ai_generated_response"] = ai_response
+        if brand_dna_key is not None:
+            data["brand_dna_key"] = brand_dna_key
+        if brand_dna_name is not None:
+            data["brand_dna_name"] = brand_dna_name
+
+        results_db.table("classification_results").update(data).eq("id", result_id).execute()
         return True
     except Exception as e:
         st.error(f"Could not save note: {e}")
@@ -513,6 +527,8 @@ if st.session_state.selected_chat_id:
                                 brand_dna=selected_dna
                             )
                             st.session_state.generated_response = response_text
+                            st.session_state.generated_response_dna_key = selected_dna_key
+                            st.session_state.generated_response_dna_name = selected_dna_name
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {str(e)}")
@@ -524,6 +540,10 @@ if st.session_state.selected_chat_id:
                     st.success(st.session_state.generated_response)
                     if st.button("🗑️ Clear", key="clear_response"):
                         del st.session_state.generated_response
+                        if "generated_response_dna_key" in st.session_state:
+                            del st.session_state.generated_response_dna_key
+                        if "generated_response_dna_name" in st.session_state:
+                            del st.session_state.generated_response_dna_name
                         st.rerun()
 
         st.markdown("---")
@@ -585,7 +605,18 @@ if st.session_state.selected_chat_id:
                 if st.button("💾 Save Note", use_container_width=True):
                     result_id = st.session_state.get("current_result_id")
                     if result_id:
-                        if update_result_note(result_id, new_note):
+                        # Get generated response and DNA if available
+                        ai_response = st.session_state.get("generated_response")
+                        dna_key = st.session_state.get("generated_response_dna_key")
+                        dna_name = st.session_state.get("generated_response_dna_name")
+
+                        if update_result_note(
+                            result_id=result_id,
+                            note=new_note,
+                            ai_response=ai_response,
+                            brand_dna_key=dna_key,
+                            brand_dna_name=dna_name
+                        ):
                             st.session_state.current_note = new_note
                             st.success("Saved!")
                     else:
