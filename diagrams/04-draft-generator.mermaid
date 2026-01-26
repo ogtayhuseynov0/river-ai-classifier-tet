@@ -1,0 +1,92 @@
+%% Draft Generator - Context Flow & Architecture
+
+flowchart TB
+    subgraph Trigger["Trigger"]
+        MSG[Customer Message]
+        MANUAL[Manual Draft Request]
+    end
+
+    subgraph Intent["Intent Detection"]
+        ID{Detect Intent}
+        BOOK[Booking Intent]
+        PRICE[Price Inquiry]
+        COMP[Complaint]
+        FAQ[FAQ Match]
+        GEN[General]
+    end
+
+    subgraph Context["Context Selection"]
+        subgraph Tier1["Tier 1: Always"]
+            DNA[Brand DNA]
+            CHAT[Chat History]
+            BIZ[Business Info]
+            SVC[Services]
+            HOURS[Business Hours]
+        end
+
+        subgraph Tier2["Tier 2: If Available"]
+            CONTACT[Contact History]
+            PROMO[Promotions]
+        end
+
+        subgraph Tier3["Tier 3: Intent-Based"]
+            CAL[Calendar Slots]
+            LINKS[Booking Links]
+            FAQDB[FAQ Answers]
+            ESCL[Escalation Rules]
+        end
+    end
+
+    subgraph Builder["Prompt Builder"]
+        ASSEMBLE[Assemble Context]
+        LIMIT[Token Limit Check]
+    end
+
+    LLM[Gemini AI]
+
+    subgraph Output["Output"]
+        DRAFT[Draft Response]
+        CONF[Confidence Score]
+    end
+
+    %% Flow
+    MSG --> ID
+    MANUAL --> ID
+
+    ID --> BOOK
+    ID --> PRICE
+    ID --> COMP
+    ID --> FAQ
+    ID --> GEN
+
+    %% Tier 1 always loaded
+    GEN --> Tier1
+
+    %% Tier 2 conditional
+    BOOK --> CONTACT
+    PRICE --> PROMO
+
+    %% Tier 3 intent-based
+    BOOK --> CAL
+    BOOK --> LINKS
+    FAQ --> FAQDB
+    COMP --> ESCL
+
+    %% Build prompt
+    Tier1 --> ASSEMBLE
+    Tier2 --> ASSEMBLE
+    Tier3 --> ASSEMBLE
+    ASSEMBLE --> LIMIT
+    LIMIT --> LLM
+
+    %% Output
+    LLM --> DRAFT
+    LLM --> CONF
+
+    %% Styling
+    style MSG fill:#3ECF8E,color:#000
+    style LLM fill:#4285F4,color:#fff
+    style DRAFT fill:#FF9800,color:#000
+    style DNA fill:#9C27B0,color:#fff
+    style CAL fill:#E91E63,color:#fff
+    style CONTACT fill:#00BCD4,color:#000
