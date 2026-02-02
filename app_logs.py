@@ -95,15 +95,13 @@ def load_chats_with_logs(org_id: str, date_from=None, date_to=None, channel=None
         return [], 0
 
 def load_chat_messages(thread_id: str, limit=20, offset=0):
-    """Load messages for a chat with pagination."""
+    """Load messages for a chat with pagination (newest first)."""
     if not crm_db or not thread_id:
         return [], 0
     try:
         response = crm_db.schema("crm").table("chat_messages").select("*", count="exact").eq("thread_id", thread_id).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
         total_count = response.count or 0
-        # Reverse to show oldest first in UI
-        messages = list(reversed(response.data or []))
-        return messages, total_count
+        return response.data or [], total_count
     except Exception as e:
         st.error(f"Error loading messages: {e}")
         return [], 0
@@ -185,7 +183,9 @@ def render_classification_badge(classification: str, confidence: float):
 def render_message_card(msg: dict, is_customer: bool):
     """Render a message card."""
     icon = "👤" if is_customer else "🏥"
-    bg_color = "#e3f2fd" if is_customer else "#f0f0f0"
+    label = "Customer" if is_customer else "Business"
+    bg_color = "#e3f2fd" if is_customer else "#e8f5e9"
+    border_color = "#1976d2" if is_customer else "#388e3c"
     text_color = "#1a1a1a"
 
     created_at = msg.get("created_at", "")
@@ -201,8 +201,8 @@ def render_message_card(msg: dict, is_customer: bool):
     content = msg.get("content", msg.get("body", ""))[:500]
 
     st.markdown(f"""
-    <div style="background: {bg_color}; padding: 10px; border-radius: 8px; margin: 5px 0; color: {text_color};">
-        <small style="color: #555;">{icon} {time_str}</small><br/>
+    <div style="background: {bg_color}; padding: 10px; border-radius: 8px; margin: 5px 0; color: {text_color}; border-left: 3px solid {border_color};">
+        <small style="color: #555;">{icon} <b>{label}</b> · {time_str}</small><br/>
         <span style="color: {text_color};">{content}</span>
     </div>
     """, unsafe_allow_html=True)
