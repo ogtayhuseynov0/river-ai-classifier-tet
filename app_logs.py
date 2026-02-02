@@ -428,10 +428,16 @@ def main():
 
     st.divider()
 
+    # Debug: show first message structure
+    if messages:
+        with st.expander("🔧 Debug: Message structure"):
+            st.json(messages[0])
+
     # Messages with side-by-side logs
     for msg in messages:
         msg_id = msg.get("id")
-        is_customer = msg.get("direction") == "inbound" or msg.get("role") == "customer"
+        direction = (msg.get("direction") or "").upper()
+        is_customer = direction == "INBOUND"
 
         col1, col2, col3 = st.columns([2, 2, 2])
 
