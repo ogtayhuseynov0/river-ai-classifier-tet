@@ -12,6 +12,39 @@ from supabase import create_client
 
 load_dotenv()
 
+# =============================================================================
+# Password Protection
+# =============================================================================
+
+def check_password():
+    """Simple password protection."""
+    app_password = os.getenv("APP_PASSWORD")
+
+    # Skip if no password set
+    if not app_password:
+        return True
+
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        return True
+
+    st.title("🔐 Login Required")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        if password == app_password:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password")
+
+    return False
+
+if not check_password():
+    st.stop()
+
 # Page config
 st.set_page_config(
     page_title="AI Logs Viewer",
@@ -427,11 +460,6 @@ def main():
         st.markdown("**Draft Response**")
 
     st.divider()
-
-    # Debug: show first message structure
-    if messages:
-        with st.expander("🔧 Debug: Message structure"):
-            st.json(messages[0])
 
     # Messages with side-by-side logs
     for msg in messages:
