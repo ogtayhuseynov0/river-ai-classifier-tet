@@ -61,10 +61,10 @@ def load_organisations():
         st.error(f"Error loading organisations: {e}")
         return []
 
-def load_chats_with_logs(org_id: str, date_from=None, date_to=None, channel=None):
-    """Load chats that have classification logs."""
+def load_chats_with_logs(org_id: str, date_from=None, date_to=None, channel=None, limit=20, offset=0):
+    """Load chats that have classification logs, ordered by latest message."""
     if not crm_db or not org_id:
-        return []
+        return [], 0
     try:
         # Get thread_ids that have classification logs
         query = crm_db.schema("crm").table("classification_logs").select("thread_id").eq("org_id", org_id)
@@ -78,30 +78,35 @@ def load_chats_with_logs(org_id: str, date_from=None, date_to=None, channel=None
         thread_ids = list(set(log["thread_id"] for log in (logs_response.data or []) if log.get("thread_id")))
 
         if not thread_ids:
-            return []
+            return [], 0
 
-        # Get chat details
-        chats_query = crm_db.schema("crm").table("chats").select("*").in_("id", thread_ids)
+        # Get chat details ordered by last_message_at
+        chats_query = crm_db.schema("crm").table("chats").select("*", count="exact").in_("id", thread_ids)
 
         if channel:
             chats_query = chats_query.eq("channel", channel)
 
-        chats_response = chats_query.order("updated_at", desc=True).execute()
-        return chats_response.data or []
+        # Order by last_message_at (most recent first), fallback to updated_at
+        chats_response = chats_query.order("last_message_at", desc=True, nullsfirst=False).range(offset, offset + limit - 1).execute()
+        total_count = chats_response.count or len(thread_ids)
+        return chats_response.data or [], total_count
     except Exception as e:
         st.error(f"Error loading chats: {e}")
-        return []
+        return [], 0
 
-def load_chat_messages(thread_id: str):
-    """Load all messages for a chat."""
+def load_chat_messages(thread_id: str, limit=20, offset=0):
+    """Load messages for a chat with pagination."""
     if not crm_db or not thread_id:
-        return []
+        return [], 0
     try:
-        response = crm_db.schema("crm").table("chat_messages").select("*").eq("thread_id", thread_id).order("created_at").execute()
-        return response.data or []
+        response = crm_db.schema("crm").table("chat_messages").select("*", count="exact").eq("thread_id", thread_id).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+        total_count = response.count or 0
+        # Reverse to show oldest first in UI
+        messages = list(reversed(response.data or []))
+        return messages, total_count
     except Exception as e:
         st.error(f"Error loading messages: {e}")
-        return []
+        return [], 0
 
 def load_classification_logs(thread_id: str):
     """Load classification logs keyed by message_id."""
@@ -350,15 +355,21 @@ def main():
 
         st.divider()
 
+        # Initialize chat pagination
+        if "chat_offset" not in st.session_state:
+            st.session_state.chat_offset = 0
+
         # Load chats
-        chats = load_chats_with_logs(
+        chats, total_chats = load_chats_with_logs(
             selected_org_id,
             date_from=datetime.combine(date_from, datetime.min.time()),
             date_to=datetime.combine(date_to, datetime.max.time()),
-            channel=channel_filter
+            channel=channel_filter,
+            limit=20,
+            offset=st.session_state.chat_offset
         )
 
-        st.subheader(f"Chats ({len(chats)})")
+        st.subheader(f"Chats ({total_chats})")
 
         # Chat list
         selected_chat = None
@@ -369,6 +380,13 @@ def main():
 
             if st.button(f"{channel_icon} {chat_title}", key=f"chat_{chat_id}", use_container_width=True):
                 st.session_state.selected_chat_id = chat_id
+                st.session_state.msg_offset = 0  # Reset message pagination
+
+        # Load more chats button
+        if st.session_state.chat_offset + len(chats) < total_chats:
+            if st.button("Load more chats...", key="load_more_chats"):
+                st.session_state.chat_offset += 20
+                st.rerun()
 
         # Set selected chat from session state
         if "selected_chat_id" in st.session_state:
@@ -381,8 +399,13 @@ def main():
 
     thread_id = selected_chat["id"]
 
+    # Initialize message pagination
+    if "msg_offset" not in st.session_state:
+        st.session_state.msg_offset = 0
+
     # Load data
-    messages = load_chat_messages(thread_id)
+    msg_limit = 20
+    messages, total_messages = load_chat_messages(thread_id, limit=msg_limit + st.session_state.msg_offset, offset=0)
     classification_logs = load_classification_logs(thread_id)
     draft_messages = load_draft_messages(thread_id)
     notes = load_notes_for_thread(thread_id) if results_db else {}
@@ -390,7 +413,7 @@ def main():
     # Header
     chat_title = selected_chat.get("title") or selected_chat.get("contact_name") or "Chat"
     st.subheader(f"💬 {chat_title}")
-    st.caption(f"Thread: {thread_id} | Messages: {len(messages)} | Classifications: {len(classification_logs)} | Drafts: {len(draft_messages)}")
+    st.caption(f"Thread: {thread_id} | Messages: {len(messages)}/{total_messages} | Classifications: {len(classification_logs)} | Drafts: {len(draft_messages)}")
 
     st.divider()
 
@@ -430,6 +453,12 @@ def main():
                 st.markdown("—")
 
         st.divider()
+
+    # Load more messages button
+    if len(messages) < total_messages:
+        if st.button("Load more messages...", key="load_more_msgs", use_container_width=True):
+            st.session_state.msg_offset += 20
+            st.rerun()
 
 if __name__ == "__main__":
     main()
