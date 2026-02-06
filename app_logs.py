@@ -17,7 +17,7 @@ load_dotenv()
 # =============================================================================
 
 def check_password():
-    """Simple password protection."""
+    """Simple password protection with rate limiting."""
     app_password = os.getenv("APP_PASSWORD")
 
     # Skip if no password set
@@ -26,9 +26,24 @@ def check_password():
 
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+    if "login_attempts" not in st.session_state:
+        st.session_state.login_attempts = 0
+    if "lockout_until" not in st.session_state:
+        st.session_state.lockout_until = None
 
     if st.session_state.authenticated:
         return True
+
+    # Check if locked out
+    if st.session_state.lockout_until:
+        if datetime.now() < st.session_state.lockout_until:
+            remaining = (st.session_state.lockout_until - datetime.now()).seconds
+            st.error(f"Too many attempts. Try again in {remaining} seconds.")
+            return False
+        else:
+            # Lockout expired, reset
+            st.session_state.login_attempts = 0
+            st.session_state.lockout_until = None
 
     st.title("🔐 Login Required")
     password = st.text_input("Password", type="password")
@@ -36,9 +51,16 @@ def check_password():
     if st.button("Login"):
         if password == app_password:
             st.session_state.authenticated = True
+            st.session_state.login_attempts = 0
             st.rerun()
         else:
-            st.error("Incorrect password")
+            st.session_state.login_attempts += 1
+            if st.session_state.login_attempts >= 5:
+                st.session_state.lockout_until = datetime.now() + timedelta(minutes=3)
+                st.error("Too many attempts. Locked for 3 minutes.")
+            else:
+                remaining = 5 - st.session_state.login_attempts
+                st.error(f"Incorrect password. {remaining} attempts remaining.")
 
     return False
 
@@ -117,7 +139,7 @@ def load_chats_with_logs(org_id: str, date_from=None, date_to=None, channel=None
         chats_query = crm_db.schema("crm").table("chats").select("*", count="exact").in_("id", thread_ids)
 
         if channel:
-            chats_query = chats_query.eq("channel", channel)
+            chats_query = chats_query.ilike("channel_type", channel)
 
         # Order by last_message_at (most recent first), fallback to updated_at
         chats_response = chats_query.order("last_message_at", desc=True, nullsfirst=False).range(offset, offset + limit - 1).execute()
@@ -383,7 +405,7 @@ def main():
             date_to = st.date_input("To", value=datetime.now())
 
         # Channel filter
-        channel = st.selectbox("Channel", ["All", "instagram", "whatsapp", "email", "sms"])
+        channel = st.selectbox("Channel", ["All", "Email", "WhatsApp", "Telegram", "Instagram", "SMS"])
         channel_filter = None if channel == "All" else channel
 
         st.divider()
