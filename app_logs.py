@@ -142,6 +142,9 @@ def load_chats_with_logs(org_id: str, date_from=None, date_to=None, channel=None
             chats_query = chats_query.ilike("channel_type", channel)
 
         # Order by last_message_at (most recent first), fallback to updated_at
+        # First get count, then adjust offset if needed
+        if offset >= len(thread_ids):
+            offset = 0
         chats_response = chats_query.order("last_message_at", desc=True, nullsfirst=False).range(offset, offset + limit - 1).execute()
         total_count = chats_response.count or len(thread_ids)
         return chats_response.data or [], total_count
@@ -413,6 +416,12 @@ def main():
         # Initialize chat pagination
         if "chat_offset" not in st.session_state:
             st.session_state.chat_offset = 0
+
+        # Reset offset when filters change
+        filter_key = f"{selected_org_id}_{date_from}_{date_to}_{channel_filter}"
+        if st.session_state.get("last_filter_key") != filter_key:
+            st.session_state.chat_offset = 0
+            st.session_state.last_filter_key = filter_key
 
         # Load chats
         chats, total_chats = load_chats_with_logs(
