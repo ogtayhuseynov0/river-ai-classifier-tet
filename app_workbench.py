@@ -393,6 +393,18 @@ def render_prompt(template: str, variables: dict, enabled_vars: dict) -> str:
 
 
 # =============================================================================
+# Trigger point callbacks
+# =============================================================================
+
+def _set_trigger(msg):
+    st.session_state.wb_selected_msg = msg
+    st.session_state.wb_run_result = None
+
+def _clear_trigger():
+    st.session_state.wb_selected_msg = None
+    st.session_state.wb_run_result = None
+
+# =============================================================================
 # Main App
 # =============================================================================
 
@@ -507,25 +519,10 @@ def main():
 
     st.markdown(f"**Chat:** {chat_title} | **Channel:** {channel} | {trigger_label}")
 
-    # Show existing AI results for selected trigger
+    # Pre-compute trigger index once
+    _trigger_idx = None
     if selected_msg:
-        msg_id = selected_msg.get("id", "")
-        c1, c2 = st.columns(2)
-        with c1:
-            cls_log = cls_logs.get(msg_id)
-            if cls_log:
-                cls_type = cls_log.get("classification", "?")
-                cls_conf = cls_log.get("confidence", 0)
-                colors = {"lead": "green", "not_lead": "red", "needs_info": "orange"}
-                st.markdown(f"Existing classification: :{colors.get(cls_type, 'grey')}[**{cls_type.upper()}**] ({cls_conf:.0%})")
-            else:
-                st.caption("No existing classification")
-        with c2:
-            draft = draft_logs.get(msg_id)
-            if draft:
-                st.markdown(f"Existing draft: {(draft.get('draft_content') or '')[:100]}")
-            else:
-                st.caption("No existing draft")
+        _trigger_idx = next((i for i, m in enumerate(all_messages) if m.get("id") == selected_msg.get("id")), None)
 
     with st.expander("Conversation", expanded=not selected_msg):
         # Scrollable container
@@ -533,8 +530,6 @@ def main():
             display_limit = st.session_state.wb_msg_display_limit
             total = len(all_messages)
 
-            # Messages are loaded oldest-first from DB; show oldest at top
-            # Only display the last `display_limit` messages
             start_idx = max(0, total - display_limit)
             visible_messages = all_messages[start_idx:]
 
@@ -544,13 +539,26 @@ def main():
                     st.session_state.wb_msg_display_limit += 30
                     st.rerun()
 
-            # Render each message
+            # Column headers
+            h1, h2, h3 = st.columns([2, 2, 2])
+            with h1:
+                st.markdown("**Message**")
+            with h2:
+                st.markdown("**Classification**")
+            with h3:
+                st.markdown("**Draft Response**")
+            st.divider()
+
+            # Render each message row
             for idx, msg in enumerate(visible_messages):
                 real_idx = start_idx + idx
                 msg_id = msg.get("id", "")
                 is_customer = msg.get("direction") == "INBOUND"
                 body = msg.get("body") or ""
                 created_at = msg.get("created_at", "")
+
+                is_selected = bool(selected_msg and selected_msg.get("id") == msg_id)
+                is_after_trigger = _trigger_idx is not None and real_idx > _trigger_idx
 
                 # Parse time
                 time_str = ""
@@ -561,55 +569,74 @@ def main():
                     except:
                         time_str = created_at[:16]
 
-                # AI log badges
-                has_cls = msg_id in cls_logs
-                has_draft = msg_id in draft_logs
-                badge_html = ""
-                if has_cls:
-                    badge_html += ' <span style="background:#4CAF50;color:white;padding:1px 5px;border-radius:3px;font-size:11px;">C</span>'
-                if has_draft:
-                    badge_html += ' <span style="background:#2196F3;color:white;padding:1px 5px;border-radius:3px;font-size:11px;">D</span>'
+                # --- 3-column row ---
+                col_msg, col_cls, col_draft = st.columns([2, 2, 2])
 
-                # Selected state
-                is_selected = bool(selected_msg and selected_msg.get("id") == msg_id)
-                # Messages after selected trigger point are greyed out
-                is_after_trigger = False
-                if selected_msg:
-                    sel_idx_check = next((i for i, m in enumerate(all_messages) if m.get("id") == selected_msg.get("id")), None)
-                    if sel_idx_check is not None and real_idx > sel_idx_check:
-                        is_after_trigger = True
+                # Column 1: Message card + trigger button
+                with col_msg:
+                    if is_customer:
+                        icon, lbl = "👤", "Customer"
+                        bg = "#1b3a4b" if is_selected else ("#e3f2fd" if not is_after_trigger else "#f5f5f5")
+                        border = "#FF9800" if is_selected else "#1976d2"
+                        txt = "#ffffff" if is_selected else ("#1a1a1a" if not is_after_trigger else "#999")
+                    else:
+                        icon, lbl = "🏥", "Business"
+                        bg = "#f5f5f5" if is_after_trigger else "#e8f5e9"
+                        border = "#388e3c"
+                        txt = "#999" if is_after_trigger else "#1a1a1a"
 
-                if is_customer:
-                    icon = "👤"
-                    label = "Customer"
-                    bg_color = "#1b3a4b" if is_selected else ("#e3f2fd" if not is_after_trigger else "#f5f5f5")
-                    border_color = "#FF9800" if is_selected else "#1976d2"
-                    text_color = "#ffffff" if is_selected else ("#1a1a1a" if not is_after_trigger else "#999")
-                else:
-                    icon = "🏥"
-                    label = "Business"
-                    bg_color = "#f5f5f5" if is_after_trigger else "#e8f5e9"
-                    border_color = "#388e3c"
-                    text_color = "#999" if is_after_trigger else "#1a1a1a"
+                    trigger_badge = ' <span style="background:#FF9800;color:white;padding:1px 5px;border-radius:3px;font-size:11px;">TRIGGER</span>' if is_selected else ""
+                    opacity = "0.5" if is_after_trigger else "1"
 
-                selected_badge = ' <span style="background:#FF9800;color:white;padding:1px 5px;border-radius:3px;font-size:11px;">TRIGGER</span>' if is_selected else ""
+                    st.markdown(f"""
+                    <div style="background:{bg};padding:10px;border-radius:8px;margin:4px 0;color:{txt};border-left:3px solid {border};opacity:{opacity};">
+                        <small style="color:{'#ccc' if is_selected else '#555'};">{icon} <b>{lbl}</b> · {time_str}{trigger_badge}</small><br/>
+                        <span style="color:{txt};">{body[:500]}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-                st.markdown(f"""
-                <div style="background:{bg_color};padding:10px;border-radius:8px;margin:4px 0;color:{text_color};border-left:3px solid {border_color};opacity:{'0.5' if is_after_trigger else '1'};">
-                    <small style="color:{'#666' if not is_selected else '#ccc'};">{icon} <b>{label}</b> · {time_str}{badge_html}{selected_badge}</small><br/>
-                    <span style="color:{text_color};">{body[:500]}</span>
-                </div>
-                """, unsafe_allow_html=True)
+                    # Small inline trigger button for customer messages
+                    if is_customer and not is_selected:
+                        st.button("Select trigger", key=f"wb_trig_{msg_id}", on_click=_set_trigger, args=(msg,))
+                    elif is_customer and is_selected:
+                        st.button("Clear trigger", key=f"wb_untrig_{msg_id}", on_click=_clear_trigger)
 
-                # Select button only for customer (INBOUND) messages
-                if is_customer:
-                    btn_label = "Selected as trigger" if is_selected else "Select as trigger"
-                    if st.button(btn_label, key=f"wb_trigger_{msg_id}", use_container_width=True, disabled=is_selected):
-                        st.session_state.wb_selected_msg = msg
-                        st.session_state.wb_run_result = None
-                        st.rerun()
+                # Column 2: Classification
+                with col_cls:
+                    cls_log = cls_logs.get(msg_id)
+                    if cls_log:
+                        cls_type = cls_log.get("classification", "?")
+                        cls_conf = cls_log.get("confidence", 0)
+                        badge_colors = {"lead": ("🟢", "#4CAF50"), "not_lead": ("🔴", "#f44336"), "needs_info": ("🟡", "#FFC107")}
+                        cls_icon, _ = badge_colors.get(cls_type, ("⚪", "#9E9E9E"))
+                        st.markdown(f"{cls_icon} **{cls_type.upper()}** ({cls_conf:.0%})")
+                        if cls_log.get("reasoning"):
+                            with st.expander("Reasoning"):
+                                st.write(cls_log["reasoning"])
+                        if cls_log.get("key_signals"):
+                            signals = cls_log["key_signals"]
+                            if isinstance(signals, list):
+                                st.caption(", ".join(signals))
+                        st.caption(f"{cls_log.get('model_name', '')} | {cls_log.get('processing_time_ms', 0)}ms")
+                    else:
+                        st.markdown("—")
 
-        # Clear trigger point button
+                # Column 3: Draft
+                with col_draft:
+                    draft = draft_logs.get(msg_id)
+                    if draft:
+                        content = draft.get("draft_content", "")
+                        st.info(content[:200] + ("..." if len(content) > 200 else ""))
+                        conf = draft.get("confidence", 0)
+                        status = draft.get("status", "")
+                        st.caption(f"Confidence: {conf:.0%} | {status}")
+                        st.caption(f"{draft.get('model_name', '')} | {draft.get('processing_time_ms', 0)}ms")
+                    else:
+                        st.markdown("—")
+
+                st.divider()
+
+        # Clear trigger button outside scrollable area
         if selected_msg:
             if st.button("Clear trigger point (use full conversation)", key="wb_clear_trigger"):
                 st.session_state.wb_selected_msg = None
