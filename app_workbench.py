@@ -3,18 +3,259 @@ Prompt Engineering Workbench
 Edit prompts, toggle variables, adjust model config, re-run classification/response, save presets.
 """
 
+import asyncio
 import json
+import logging
 import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional, List, Any, Dict, Literal
 
 import streamlit as st
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 from supabase import create_client
+from google import genai
+from google.genai import types as genai_types
 
-from main import LeadClassifier, CLASSIFICATION_PROMPT, EXTRACTION_PROMPT
+from main import EXTRACTION_PROMPT
 from response_generator import RESPONSE_PROMPT, BRAND_DNA_PROFILES, format_brand_dna_prompt
+
+
+# =============================================================================
+# Copied from RiverAI backend - google_model_utils.py (slimmed for workbench)
+# =============================================================================
+
+class GoogleModelTypes:
+    GEMINI_2_5_PRO = "gemini-2.5-pro"
+    GEMINI_2_5_FLASH = "gemini-2.5-flash"
+    GEMINI_2_5_FLASH_LITE = "gemini-2.5-flash-lite"
+
+
+class GoogleModel:
+    """Slim wrapper around google.genai for workbench use (generate_structured + generate_text)."""
+
+    def __init__(self, project_id: str = "", location: str = "us-central1"):
+        if not project_id:
+            project_id = os.getenv("GOOGLE_PROJECT_ID", "").strip()
+        if not location:
+            location = os.getenv("GOOGLE_LOCATION", "us-central1")
+        if not project_id:
+            raise ValueError("Set GOOGLE_PROJECT_ID env var or pass project_id.")
+        self.project_id = project_id
+        self.location = location
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.client = genai.Client(
+            vertexai=True,
+            project=self.project_id,
+            location=self.location,
+        )
+
+    async def generate_text(
+        self,
+        prompt: str,
+        model_name: str = GoogleModelTypes.GEMINI_2_5_FLASH,
+        system_instruction: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+        thinking_budget: Optional[int] = None,
+    ) -> Optional[str]:
+        cfg: Dict[str, Any] = {}
+        if system_instruction:
+            cfg["system_instruction"] = system_instruction
+        if temperature is not None:
+            cfg["temperature"] = temperature
+        if max_output_tokens is not None:
+            cfg["max_output_tokens"] = max_output_tokens
+        if thinking_budget is not None:
+            cfg["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
+        final_cfg = genai_types.GenerateContentConfig(**cfg) if cfg else None
+        try:
+            resp = await self.client.aio.models.generate_content(
+                model=model_name, contents=prompt, config=final_cfg,
+            )
+            return resp.text
+        except Exception:
+            self.logger.exception("generate_text failed.")
+            return None
+
+    async def generate_structured(
+        self,
+        prompt: str,
+        response_schema: type,
+        model_name: str = GoogleModelTypes.GEMINI_2_5_FLASH,
+        system_instruction: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+        thinking_budget: Optional[int] = None,
+    ) -> Optional[Any]:
+        cfg: Dict[str, Any] = {
+            "response_mime_type": "application/json",
+            "response_schema": response_schema,
+        }
+        if system_instruction:
+            cfg["system_instruction"] = system_instruction
+        if temperature is not None:
+            cfg["temperature"] = temperature
+        if max_output_tokens is not None:
+            cfg["max_output_tokens"] = max_output_tokens
+        if thinking_budget is not None:
+            cfg["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
+        final_cfg = genai_types.GenerateContentConfig(**cfg)
+        try:
+            resp = await self.client.aio.models.generate_content(
+                model=model_name, contents=prompt, config=final_cfg,
+            )
+            return resp.parsed
+        except Exception:
+            self.logger.exception("generate_structured failed.")
+            return None
+
+
+# =============================================================================
+# Copied from RiverAI backend - lead_classifier schemas
+# =============================================================================
+
+class MatchedServiceResponse(BaseModel):
+    service: str = Field(..., description="Service name matching clinic offerings")
+    confidence: float = Field(1.0, ge=0.0, le=1.0, description="Match confidence")
+
+
+class ExtractedDataResponse(BaseModel):
+    first_name: Optional[str] = Field(None, description="Customer's first name")
+    last_name: Optional[str] = Field(None, description="Customer's last name / surname")
+    date_of_birth: Optional[str] = Field(None, description="Date of birth (YYYY-MM-DD)")
+    gender: Optional[str] = Field(None, description="Gender if mentioned (male/female/other)")
+    street: Optional[str] = Field(None, description="Street name")
+    house_number: Optional[str] = Field(None, description="House/building number")
+    flat_number: Optional[str] = Field(None, description="Flat/apartment number")
+    post_code: Optional[str] = Field(None, description="Postal/zip code")
+    city: Optional[str] = Field(None, description="City name")
+    country: Optional[str] = Field(None, description="Country name or ISO code")
+    language: Optional[str] = Field(None, description="ISO 639-1 language code (en, es, de, etc.)")
+    matched_services: List[MatchedServiceResponse] = Field(default_factory=list, description="Services customer asked about")
+
+
+class ClassificationResponse(BaseModel):
+    classification: Literal["lead", "not_lead", "needs_info"] = Field(..., description="Classification result")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score 0.0-1.0")
+    reasoning: str = Field(..., description="One sentence explanation")
+    key_signals: List[str] = Field(default_factory=list, description="Key signals identified")
+    extracted: ExtractedDataResponse = Field(default_factory=ExtractedDataResponse, description="Extracted data")
+
+
+# =============================================================================
+# Copied from RiverAI backend - response_drafter schema
+# =============================================================================
+
+class DraftResponse(BaseModel):
+    draft_content: str = Field(..., description="The draft response message ready to send.")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score 0.0-1.0")
+    reasoning: str = Field(..., description="Brief explanation of the response approach taken.")
+
+
+# =============================================================================
+# Copied from RiverAI backend - lead_classifier prompts
+# =============================================================================
+
+CLASSIFICATION_PROMPT = """Analyze this conversation for {clinic_type} "{clinic_name}".
+{location_context}
+Services offered:
+{formatted_services}
+
+Conversation ({source}):
+{formatted_messages}
+
+CLASSIFICATION RULES:
+- lead: asking about services above, pricing, appointments, or related health concerns
+- not_lead: spam, wrong number, job seekers, existing patient follow-up, or services we don't offer
+- needs_info: too short/unclear to determine
+
+GEOGRAPHIC CONSIDERATION:
+- If clinic mentions they don't operate in customer's region -> classify as not_lead with high confidence
+- If customer location is very far from clinic location -> reduce confidence (but don't auto-reject)
+- If customer explicitly mentions being in a different country/distant city -> lower confidence by 0.1-0.2
+
+CONFIDENCE GUIDE:
+- 0.95+: explicit intent ("I want to book X")
+- 0.80-0.94: strong signals (asking prices, availability)
+- 0.60-0.79: moderate signals (general interest)
+- 0.40-0.59: weak signals (vague message)
+- <0.40: very uncertain
+
+EXTRACTION RULES:
+- Name: Split full names into first_name and last_name separately. If only one name given, put it in first_name and leave last_name empty.
+- Address: Extract street, house_number, flat_number, city, post_code, country if mentioned. Extract each component separately.
+- Language: Extract if mentioned (ISO code like 'es', 'en', 'fr')
+- matched_services: ONLY include services the customer explicitly mentioned or asked about - do NOT list all services, leave empty if none specifically mentioned."""
+
+DRAFT_RESPONSE_PROMPT = """You are responding on behalf of "{clinic_name}".
+
+## ABOUT THE CLINIC
+{clinic_info}
+
+## SERVICES OFFERED
+{formatted_services}
+
+## CONVERSATION HISTORY
+{formatted_messages}
+{contact_context}
+
+## RESPONSE GUIDELINES
+
+**Voice & Tone:**
+- Professional yet warm and approachable
+- Empathetic when addressing concerns or questions
+- Confident but not pushy about services
+- Helpful and solution-oriented
+
+**Language:**
+- Respond in the same language the customer is using
+- If uncertain, use: {default_language}
+- Keep sentences clear and easy to understand
+- Avoid medical jargon unless the customer uses it
+
+**Content Rules:**
+- Address the customer's question/concern directly
+- If they ask about a specific service, provide relevant details from the services list
+- Include pricing ONLY if the service shows price info
+- If booking-related, mention they can book online or contact us
+- If consultation required, mention the consultation requirement
+- Don't make promises about availability or specific times
+- Don't diagnose or give medical advice
+
+**Format:**
+- Keep response concise (1-3 sentences for simple queries)
+- Use longer responses only for detailed service inquiries
+- Don't use emojis unless the customer uses them
+- Don't start with "Dear" - use the customer's name if known, otherwise start directly
+
+**Contact Info (include when relevant):**
+{contact_info}
+
+Generate a response ready for clinic staff to review and send."""
+
+
+def cls_format_messages(messages: list[dict]) -> str:
+    """Format conversation messages for the prompt."""
+    formatted = []
+    for msg in messages:
+        role = msg.get("role", "unknown").upper()
+        content = msg.get("content", "")
+        content = content.replace("\n", " ").replace("\r", " ").replace('"', "'")
+        content = content[:500]
+        timestamp = msg.get("timestamp", "")
+        if timestamp:
+            formatted.append(f"[{timestamp}] {role}: {content}")
+        else:
+            formatted.append(f"{role}: {content}")
+    return "\n".join(formatted)
+
+
+def cls_format_services(services: list[str]) -> str:
+    """Format services list for the prompt."""
+    return "\n".join(f"- {service}" for service in services)
 
 env_path = Path(__file__).parent / ".env"
 load_dotenv(env_path)
@@ -94,50 +335,70 @@ crm_db = get_crm_db()
 results_db = get_results_db()
 
 # =============================================================================
-# AI Execution Engine
+# AI Execution Engine (google.genai SDK)
 # =============================================================================
 
+def _run_async(coro):
+    """Run an async coroutine from sync context, handling Streamlit's event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Streamlit already has a loop — run in a new thread
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    else:
+        return asyncio.run(coro)
+
+
 @st.cache_resource
-def get_classifier(model_name: str):
-    return LeadClassifier(model_name=model_name)
+def get_google_model():
+    """Initialise GoogleModel once (uses ADC / GOOGLE_PROJECT_ID env)."""
+    return GoogleModel()
 
 
-def execute_custom_prompt(model_name, prompt_text, temperature, top_p, max_tokens, mime_type):
-    """Execute a custom prompt against the Gemini API. Returns (raw_text, latency_ms, token_count)."""
-    classifier = get_classifier(model_name)
-
-    gen_config = {
-        "temperature": float(temperature),
-        "topP": float(top_p),
-        "maxOutputTokens": int(max_tokens),
-    }
-    if mime_type:
-        gen_config["responseMimeType"] = mime_type
-
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-        "generationConfig": gen_config,
-    }
-
+def execute_structured_prompt(model_name, prompt_text, response_schema, temperature, max_tokens, thinking_budget=0):
+    """Execute a structured prompt via google.genai. Returns (parsed_model, raw_text, latency_ms, token_count)."""
+    model = get_google_model()
     start = time.time()
-    response = classifier.session.post(
-        classifier.url,
-        json=payload,
-        headers=classifier._get_headers(),
-        timeout=60,
-    )
+    parsed = _run_async(model.generate_structured(
+        prompt=prompt_text,
+        response_schema=response_schema,
+        model_name=model_name,
+        temperature=float(temperature),
+        max_output_tokens=int(max_tokens),
+        thinking_budget=thinking_budget,
+    ))
     latency_ms = int((time.time() - start) * 1000)
 
-    if not response.ok:
-        raise Exception(f"API {response.status_code}: {response.text[:500]}")
+    if parsed is None:
+        raise Exception("generate_structured returned None - check logs")
 
-    data = response.json()
-    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+    raw_text = parsed.model_dump_json(indent=2)
+    token_count = 0
+    return parsed, raw_text, latency_ms, token_count
+
+
+def execute_text_prompt(model_name, prompt_text, temperature, max_tokens, thinking_budget=0):
+    """Execute a plain text prompt via google.genai. Returns (raw_text, latency_ms, token_count)."""
+    model = get_google_model()
+    start = time.time()
+    raw_text = _run_async(model.generate_text(
+        prompt=prompt_text,
+        model_name=model_name,
+        temperature=float(temperature),
+        max_output_tokens=int(max_tokens),
+        thinking_budget=thinking_budget,
+    ))
+    latency_ms = int((time.time() - start) * 1000)
+
+    if raw_text is None:
+        raise Exception("generate_text returned None - check logs")
 
     token_count = 0
-    usage = data.get("usageMetadata", {})
-    token_count = usage.get("totalTokenCount", 0)
-
     return raw_text, latency_ms, token_count
 
 # =============================================================================
@@ -321,6 +582,7 @@ VARIABLE_DEFS = {
     "classification": {
         "clinic_name": "Organisation name",
         "clinic_type": "Organisation type (e.g. dental clinic)",
+        "location_context": "Clinic location (city, country)",
         "formatted_services": "List of services offered",
         "source": "Channel source (instagram, whatsapp, etc.)",
         "formatted_messages": "Formatted conversation messages",
@@ -342,7 +604,6 @@ VARIABLE_DEFS = {
 
 def build_variable_values(org, services, messages, channel, brand_dna_key=None):
     """Build the actual variable values from loaded data."""
-    classifier = get_classifier("gemini-2.5-flash-lite")
     org_name = org.get("name", "Unknown") if org else "Unknown"
     org_type = "medical practice"
     service_names = [s["name"] for s in services] if services else []
@@ -358,13 +619,14 @@ def build_variable_values(org, services, messages, channel, brand_dna_key=None):
     brand_dna = BRAND_DNA_PROFILES.get(brand_dna_key) if brand_dna_key else None
 
     return {
-        # Classification vars
+        # Classification vars (uses backend prompt helpers)
         "clinic_name": org_name,
         "clinic_type": org_type,
-        "formatted_services": classifier._format_services(service_names),
+        "formatted_services": cls_format_services(service_names),
         "source": channel or "chat",
-        "formatted_messages": classifier._format_messages(formatted_msgs),
-        # Response vars
+        "formatted_messages": cls_format_messages(formatted_msgs),
+        "location_context": "",
+        # Response vars (legacy prompts from response_generator.py)
         "business_name": org_name,
         "business_type": org_type,
         "services_list": "\n".join(f"- {s}" for s in service_names[:15]),
@@ -727,8 +989,6 @@ def main():
             top_p = st.slider("Top P", 0.0, 1.0, 0.8, 0.05, key="wb_top_p")
         max_tokens = st.number_input("Max output tokens", 64, 4096, 256, key="wb_max_tokens")
 
-        mime_type = "application/json" if prompt_type in ("classification", "extraction") else None
-
         # Comparison mode toggle
         comparison_mode = st.checkbox("Comparison mode (A/B)", key="wb_compare_mode")
 
@@ -746,24 +1006,40 @@ def main():
         var_values = build_variable_values(selected_org, services, messages, channel, brand_dna_key)
         rendered_prompt = render_prompt(template, var_values, enabled_vars)
 
+        # Schema for structured types
+        schema_map = {
+            "classification": ClassificationResponse,
+            "extraction": ExtractedDataResponse,
+        }
+
         with st.expander("Rendered prompt preview"):
             st.code(rendered_prompt, language="text")
+
+        # --- Helper to run a single prompt ---
+        def _run_single(m_name, temp, m_tokens):
+            schema = schema_map.get(prompt_type)
+            if schema:
+                parsed, raw, lat, tok = execute_structured_prompt(
+                    m_name, rendered_prompt, schema, temp, m_tokens,
+                )
+                return raw, lat, tok
+            else:
+                raw, lat, tok = execute_text_prompt(
+                    m_name, rendered_prompt, temp, m_tokens,
+                )
+                return raw, lat, tok
 
         # Run buttons
         if comparison_mode:
             if st.button("Run Both (A vs B)", type="primary", use_container_width=True, key="wb_run_both"):
                 with st.spinner("Running A..."):
                     try:
-                        raw_a, lat_a, tok_a = execute_custom_prompt(
-                            model_name, rendered_prompt, temperature, top_p, max_tokens, mime_type
-                        )
+                        raw_a, lat_a, tok_a = _run_single(model_name, temperature, max_tokens)
                     except Exception as e:
                         raw_a, lat_a, tok_a = f"ERROR: {e}", 0, 0
                 with st.spinner("Running B..."):
                     try:
-                        raw_b, lat_b, tok_b = execute_custom_prompt(
-                            model_b, rendered_prompt, temp_b, top_p_b, max_tokens_b, mime_type
-                        )
+                        raw_b, lat_b, tok_b = _run_single(model_b, temp_b, max_tokens_b)
                     except Exception as e:
                         raw_b, lat_b, tok_b = f"ERROR: {e}", 0, 0
                 st.session_state.wb_run_result = {
@@ -774,38 +1050,36 @@ def main():
                     "prompt_type": prompt_type,
                     "vars_config": enabled_vars,
                 }
-                # Save both runs
                 for label, r in [("a", st.session_state.wb_run_result["a"]), ("b", st.session_state.wb_run_result["b"])]:
                     _save_run_from_result(r, prompt_type, rendered_prompt, enabled_vars, thread_id, channel, brand_dna_key)
                 st.rerun()
         else:
             if st.button("Run", type="primary", use_container_width=True, key="wb_run"):
-                with st.spinner("Running prompt..."):
-                    try:
-                        raw, lat, tok = execute_custom_prompt(
-                            model_name, rendered_prompt, temperature, top_p, max_tokens, mime_type
-                        )
-                        st.session_state.wb_run_result = {
-                            "comparison": False,
-                            "raw": raw,
-                            "latency_ms": lat,
-                            "token_count": tok,
-                            "model": model_name,
-                            "temp": temperature,
-                            "top_p": top_p,
-                            "max_tokens": max_tokens,
-                            "prompt_snapshot": rendered_prompt,
-                            "prompt_type": prompt_type,
-                            "vars_config": enabled_vars,
-                        }
-                        # Save run
-                        _save_run_from_result(
-                            st.session_state.wb_run_result, prompt_type, rendered_prompt,
-                            enabled_vars, thread_id, channel, brand_dna_key
-                        )
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-                st.rerun()
+                try:
+                    with st.spinner("Running prompt..."):
+                        raw, lat, tok = _run_single(model_name, temperature, max_tokens)
+                    st.session_state.wb_run_result = {
+                        "comparison": False,
+                        "raw": raw,
+                        "latency_ms": lat,
+                        "token_count": tok,
+                        "model": model_name,
+                        "temp": temperature,
+                        "top_p": top_p,
+                        "max_tokens": max_tokens,
+                        "prompt_snapshot": rendered_prompt,
+                        "prompt_type": prompt_type,
+                        "vars_config": enabled_vars,
+                    }
+                    _save_run_from_result(
+                        st.session_state.wb_run_result, prompt_type, rendered_prompt,
+                        enabled_vars, thread_id, channel, brand_dna_key
+                    )
+                    st.rerun()
+                except Exception as e:
+                    import traceback
+                    st.error(f"Error: {e}")
+                    st.code(traceback.format_exc())
 
     # =========================================================================
     # Result Panel
@@ -928,7 +1202,7 @@ def main():
                     temperature=temperature,
                     top_p=top_p,
                     max_output_tokens=max_tokens,
-                    response_mime_type=mime_type or "text/plain",
+                    response_mime_type="application/json" if prompt_type in ("classification", "extraction") else "text/plain",
                     brand_dna_key=brand_dna_key,
                 )
                 if saved:
