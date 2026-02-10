@@ -250,7 +250,7 @@ def render_message_card(msg: dict, is_customer: bool):
     if created_at:
         try:
             dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            time_str = dt.strftime("%H:%M")
+            time_str = dt.strftime("%b %d, %H:%M")
         except:
             time_str = ""
     else:
