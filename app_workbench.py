@@ -524,7 +524,7 @@ def main():
     if selected_msg:
         _trigger_idx = next((i for i, m in enumerate(all_messages) if m.get("id") == selected_msg.get("id")), None)
 
-    with st.expander("Conversation", expanded=not selected_msg):
+    with st.expander("Conversation", expanded=True):
         # Scrollable container
         with st.container(height=400):
             display_limit = st.session_state.wb_msg_display_limit
