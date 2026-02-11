@@ -997,11 +997,7 @@ def main():
             "gemini-2.0-flash-lite",
         ]
         model_name = st.selectbox("Model", model_options, key="wb_model")
-        mc1, mc2 = st.columns(2)
-        with mc1:
-            temperature = st.slider("Temperature", 0.0, 2.0, 0.1, 0.05, key="wb_temp")
-        with mc2:
-            top_p = st.slider("Top P", 0.0, 1.0, 0.8, 0.05, key="wb_top_p")
+        temperature = st.slider("Temperature", 0.0, 2.0, 0.1, 0.05, key="wb_temp")
         max_tokens = st.number_input("Max output tokens", 64, 4096, 256, key="wb_max_tokens")
 
         # Comparison mode toggle
@@ -1010,12 +1006,7 @@ def main():
         if comparison_mode:
             st.markdown("**Preset B config**")
             model_b = st.selectbox("Model B", model_options, key="wb_model_b")
-            mc1b, mc2b = st.columns(2)
-            with mc1b:
-                temp_b = st.slider("Temperature B", 0.0, 2.0, 0.1, 0.05, key="wb_temp_b")
-            with mc2b:
-                top_p_b = st.slider("Top P B", 0.0, 1.0, 0.8, 0.05, key="wb_top_p_b")
-            max_tokens_b = st.number_input("Max output tokens B", 64, 4096, 256, key="wb_max_tokens_b")
+            temp_b = st.slider("Temperature B", 0.0, 2.0, 0.1, 0.05, key="wb_temp_b")
 
         # Build rendered prompt preview
         var_values = build_variable_values(selected_org, services, messages, channel, brand_dna_key)
@@ -1059,8 +1050,8 @@ def main():
                         raw_b, lat_b, tok_b = f"ERROR: {e}", 0, 0
                 st.session_state.wb_run_result = {
                     "comparison": True,
-                    "a": {"raw": raw_a, "latency_ms": lat_a, "token_count": tok_a, "model": model_name, "temp": temperature, "top_p": top_p, "max_tokens": max_tokens},
-                    "b": {"raw": raw_b, "latency_ms": lat_b, "token_count": tok_b, "model": model_b, "temp": temp_b, "top_p": top_p_b, "max_tokens": max_tokens_b},
+                    "a": {"raw": raw_a, "latency_ms": lat_a, "token_count": tok_a, "model": model_name, "temp": temperature, "max_tokens": max_tokens},
+                    "b": {"raw": raw_b, "latency_ms": lat_b, "token_count": tok_b, "model": model_b, "temp": temp_b, "max_tokens": max_tokens},
                     "prompt_snapshot": rendered_prompt,
                     "prompt_type": prompt_type,
                     "vars_config": enabled_vars,
