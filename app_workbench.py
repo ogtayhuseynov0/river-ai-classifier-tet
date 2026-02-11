@@ -3,12 +3,10 @@ Prompt Engineering Workbench
 Edit prompts, toggle variables, adjust model config, re-run classification/response, save presets.
 """
 
-import asyncio
 import json
 import logging
 import os
 import re
-import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -72,7 +70,7 @@ class GoogleModel:
             location=self.location,
         )
 
-    async def generate_text(
+    def generate_text(
         self,
         prompt: str,
         model_name: str = GoogleModelTypes.GEMINI_2_5_FLASH,
@@ -89,7 +87,7 @@ class GoogleModel:
             cfg["max_output_tokens"] = max_output_tokens
         final_cfg = genai_types.GenerateContentConfig(**cfg) if cfg else None
         try:
-            resp = await self.client.aio.models.generate_content(
+            resp = self.client.models.generate_content(
                 model=model_name, contents=prompt, config=final_cfg,
             )
             return resp.text
@@ -97,7 +95,7 @@ class GoogleModel:
             self.logger.exception("generate_text failed.")
             return None
 
-    async def generate_structured(
+    def generate_structured(
         self,
         prompt: str,
         response_schema: type,
@@ -106,10 +104,6 @@ class GoogleModel:
         temperature: Optional[float] = None,
         max_output_tokens: Optional[int] = None,
     ) -> Optional[Any]:
-        # Avoid response_schema param — the SDK injects thinking_budget=0
-        # which is invalid for many models.
-        # Instead: append JSON instruction directly to prompt (most reliable)
-        # and use response_mime_type as a hint.
         schema_text = json.dumps(response_schema.model_json_schema(), indent=2)
         json_instruction = (
             "\n\n---\nRESPOND WITH ONLY A RAW JSON OBJECT. "
@@ -125,12 +119,13 @@ class GoogleModel:
             cfg["system_instruction"] = system_instruction
         if temperature is not None:
             cfg["temperature"] = temperature
-        # Ensure enough tokens for JSON output (preamble can eat ~50 tokens)
-        tokens = max(max_output_tokens or 1024, 1024)
+        # Thinking models (2.5+) use thinking tokens from this budget.
+        # Need headroom: 1k-2k for thinking + actual JSON output.
+        tokens = max(max_output_tokens or 4096, 4096)
         cfg["max_output_tokens"] = tokens
 
         final_cfg = genai_types.GenerateContentConfig(**cfg)
-        resp = await self.client.aio.models.generate_content(
+        resp = self.client.models.generate_content(
             model=model_name, contents=full_prompt, config=final_cfg,
         )
         raw = _extract_json_from_text(resp.text)
@@ -362,31 +357,10 @@ results_db = get_results_db()
 # AI Execution Engine (google.genai SDK)
 # =============================================================================
 
-_bg_loop: Optional[asyncio.AbstractEventLoop] = None
-_bg_thread: Optional[threading.Thread] = None
-
-
-def _get_bg_loop() -> asyncio.AbstractEventLoop:
-    """Return a persistent background event loop (created once, never closed)."""
-    global _bg_loop, _bg_thread
-    if _bg_loop is None or _bg_loop.is_closed():
-        _bg_loop = asyncio.new_event_loop()
-        _bg_thread = threading.Thread(target=_bg_loop.run_forever, daemon=True)
-        _bg_thread.start()
-    return _bg_loop
-
-
-def _run_async(coro):
-    """Run an async coroutine on a persistent background loop."""
-    loop = _get_bg_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result()
-
-
 GLOBAL_MODELS = {"gemini-3-pro-preview", "gemini-3-flash-preview"}
 
 @st.cache_resource
-def get_google_model(location: str = "us-central1"):
+def get_google_model(location: str = "us-central1", _v: int = 2):
     """Initialise GoogleModel once per location."""
     return GoogleModel(location=location)
 
@@ -399,13 +373,13 @@ def execute_structured_prompt(model_name, prompt_text, response_schema, temperat
     """Execute a structured prompt via google.genai. Returns (parsed_model, raw_text, latency_ms, token_count)."""
     model = get_google_model(_model_location(model_name))
     start = time.time()
-    parsed = _run_async(model.generate_structured(
+    parsed = model.generate_structured(
         prompt=prompt_text,
         response_schema=response_schema,
         model_name=model_name,
         temperature=float(temperature),
         max_output_tokens=int(max_tokens),
-    ))
+    )
     latency_ms = int((time.time() - start) * 1000)
 
     if parsed is None:
@@ -420,12 +394,12 @@ def execute_text_prompt(model_name, prompt_text, temperature, max_tokens):
     """Execute a plain text prompt via google.genai. Returns (raw_text, latency_ms, token_count)."""
     model = get_google_model(_model_location(model_name))
     start = time.time()
-    raw_text = _run_async(model.generate_text(
+    raw_text = model.generate_text(
         prompt=prompt_text,
         model_name=model_name,
         temperature=float(temperature),
         max_output_tokens=int(max_tokens),
-    ))
+    )
     latency_ms = int((time.time() - start) * 1000)
 
     if raw_text is None:
