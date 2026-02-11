@@ -997,7 +997,7 @@ def main():
         ]
         model_name = st.selectbox("Model", model_options, key="wb_model")
         temperature = st.slider("Temperature", 0.0, 2.0, 0.1, 0.05, key="wb_temp")
-        max_tokens = st.number_input("Max output tokens", 64, 4096, 256, key="wb_max_tokens")
+        max_tokens = 4096  # internal default, not shown in UI
 
         # Comparison mode toggle
         comparison_mode = st.checkbox("Comparison mode (A/B)", key="wb_compare_mode")
