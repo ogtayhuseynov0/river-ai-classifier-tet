@@ -504,7 +504,7 @@ def load_presets(prompt_type: str = None):
         return []
 
 def save_preset(name, description, tags, prompt_type, prompt_template, variables_config,
-                model_name, temperature, top_p, max_output_tokens, response_mime_type, brand_dna_key):
+                model_name, temperature, max_output_tokens, response_mime_type, brand_dna_key):
     if not results_db:
         st.warning("Results DB not configured")
         return None
@@ -517,7 +517,6 @@ def save_preset(name, description, tags, prompt_type, prompt_template, variables
         "variables_config": variables_config,
         "model_name": model_name,
         "temperature": float(temperature),
-        "top_p": float(top_p),
         "max_output_tokens": int(max_output_tokens),
         "response_mime_type": response_mime_type,
         "brand_dna_key": brand_dna_key,
@@ -1045,7 +1044,7 @@ def main():
                         raw_a, lat_a, tok_a = f"ERROR: {e}", 0, 0
                 with st.spinner("Running B..."):
                     try:
-                        raw_b, lat_b, tok_b = _run_single(model_b, temp_b, max_tokens_b)
+                        raw_b, lat_b, tok_b = _run_single(model_b, temp_b, max_tokens)
                     except Exception as e:
                         raw_b, lat_b, tok_b = f"ERROR: {e}", 0, 0
                 st.session_state.wb_run_result = {
@@ -1071,7 +1070,6 @@ def main():
                         "token_count": tok,
                         "model": model_name,
                         "temp": temperature,
-                        "top_p": top_p,
                         "max_tokens": max_tokens,
                         "prompt_snapshot": rendered_prompt,
                         "prompt_type": prompt_type,
@@ -1143,7 +1141,7 @@ def main():
                     elif run.get("raw_response"):
                         st.code(run["raw_response"][:500])
 
-                    st.caption(f"Tokens: {run.get('token_count', 0)} | Temp: {run.get('temperature', '?')} | TopP: {run.get('top_p', '?')}")
+                    st.caption(f"Tokens: {run.get('token_count', 0)} | Temp: {run.get('temperature', '?')}")
 
                     # Rating controls
                     rc1, rc2, rc3 = st.columns([1, 1, 3])
@@ -1206,7 +1204,6 @@ def main():
                     variables_config=enabled_vars,
                     model_name=model_name,
                     temperature=temperature,
-                    top_p=top_p,
                     max_output_tokens=max_tokens,
                     response_mime_type="application/json" if prompt_type in ("classification", "extraction") else "text/plain",
                     brand_dna_key=brand_dna_key,
@@ -1340,7 +1337,6 @@ def _save_run_from_result(result_data, prompt_type, rendered_prompt, vars_config
         "prompt_snapshot": rendered_prompt,
         "model_name": result_data.get("model", ""),
         "temperature": result_data.get("temp"),
-        "top_p": result_data.get("top_p"),
         "max_output_tokens": result_data.get("max_tokens"),
         "variables_config": vars_config,
         "raw_response": raw,
@@ -1383,9 +1379,6 @@ def _load_preset_into_state(preset):
     st.session_state.wb_temp = preset.get("temperature", 0.1)
     if isinstance(st.session_state.wb_temp, str):
         st.session_state.wb_temp = float(st.session_state.wb_temp)
-    st.session_state.wb_top_p = preset.get("top_p", 0.8)
-    if isinstance(st.session_state.wb_top_p, str):
-        st.session_state.wb_top_p = float(st.session_state.wb_top_p)
     st.session_state.wb_max_tokens = preset.get("max_output_tokens", 256)
 
     if preset.get("brand_dna_key"):
