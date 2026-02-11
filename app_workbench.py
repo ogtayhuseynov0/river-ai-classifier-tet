@@ -7,6 +7,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -33,8 +35,26 @@ class GoogleModelTypes:
     GEMINI_2_5_FLASH_LITE = "gemini-2.5-flash-lite"
 
 
+def _extract_json_from_text(text: Optional[str]) -> str:
+    """Extract JSON object from model text that may contain preamble/fences."""
+    if not text:
+        return "{}"
+    t = text.strip()
+    # Remove markdown fences
+    if "```" in t:
+        m = re.search(r"```(?:json)?\s*\n?(.*?)```", t, re.DOTALL)
+        if m:
+            t = m.group(1).strip()
+    # Extract first { ... last }
+    start = t.find("{")
+    end = t.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return t[start:end + 1]
+    return t
+
+
 class GoogleModel:
-    """Slim wrapper around google.genai for workbench use (generate_structured + generate_text)."""
+    """Slim wrapper around google.genai for workbench use."""
 
     def __init__(self, project_id: str = "", location: str = "us-central1"):
         if not project_id:
@@ -59,7 +79,6 @@ class GoogleModel:
         system_instruction: Optional[str] = None,
         temperature: Optional[float] = None,
         max_output_tokens: Optional[int] = None,
-        thinking_budget: Optional[int] = None,
     ) -> Optional[str]:
         cfg: Dict[str, Any] = {}
         if system_instruction:
@@ -68,8 +87,6 @@ class GoogleModel:
             cfg["temperature"] = temperature
         if max_output_tokens is not None:
             cfg["max_output_tokens"] = max_output_tokens
-        if thinking_budget is not None:
-            cfg["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
         final_cfg = genai_types.GenerateContentConfig(**cfg) if cfg else None
         try:
             resp = await self.client.aio.models.generate_content(
@@ -88,29 +105,36 @@ class GoogleModel:
         system_instruction: Optional[str] = None,
         temperature: Optional[float] = None,
         max_output_tokens: Optional[int] = None,
-        thinking_budget: Optional[int] = None,
     ) -> Optional[Any]:
+        # Avoid response_schema param — the SDK injects thinking_budget=0
+        # which is invalid for many models.
+        # Instead: append JSON instruction directly to prompt (most reliable)
+        # and use response_mime_type as a hint.
+        schema_text = json.dumps(response_schema.model_json_schema(), indent=2)
+        json_instruction = (
+            "\n\n---\nRESPOND WITH ONLY A RAW JSON OBJECT. "
+            "No markdown, no fences, no preamble, no explanation.\n"
+            f"Required schema:\n{schema_text}"
+        )
+        full_prompt = prompt + json_instruction
+
         cfg: Dict[str, Any] = {
             "response_mime_type": "application/json",
-            "response_schema": response_schema,
         }
         if system_instruction:
             cfg["system_instruction"] = system_instruction
         if temperature is not None:
             cfg["temperature"] = temperature
-        if max_output_tokens is not None:
-            cfg["max_output_tokens"] = max_output_tokens
-        if thinking_budget is not None:
-            cfg["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
+        # Ensure enough tokens for JSON output (preamble can eat ~50 tokens)
+        tokens = max(max_output_tokens or 1024, 1024)
+        cfg["max_output_tokens"] = tokens
+
         final_cfg = genai_types.GenerateContentConfig(**cfg)
-        try:
-            resp = await self.client.aio.models.generate_content(
-                model=model_name, contents=prompt, config=final_cfg,
-            )
-            return resp.parsed
-        except Exception:
-            self.logger.exception("generate_structured failed.")
-            return None
+        resp = await self.client.aio.models.generate_content(
+            model=model_name, contents=full_prompt, config=final_cfg,
+        )
+        raw = _extract_json_from_text(resp.text)
+        return response_schema.model_validate_json(raw)
 
 
 # =============================================================================
@@ -338,31 +362,42 @@ results_db = get_results_db()
 # AI Execution Engine (google.genai SDK)
 # =============================================================================
 
+_bg_loop: Optional[asyncio.AbstractEventLoop] = None
+_bg_thread: Optional[threading.Thread] = None
+
+
+def _get_bg_loop() -> asyncio.AbstractEventLoop:
+    """Return a persistent background event loop (created once, never closed)."""
+    global _bg_loop, _bg_thread
+    if _bg_loop is None or _bg_loop.is_closed():
+        _bg_loop = asyncio.new_event_loop()
+        _bg_thread = threading.Thread(target=_bg_loop.run_forever, daemon=True)
+        _bg_thread.start()
+    return _bg_loop
+
+
 def _run_async(coro):
-    """Run an async coroutine from sync context, handling Streamlit's event loop."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
+    """Run an async coroutine on a persistent background loop."""
+    loop = _get_bg_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result()
 
-    if loop and loop.is_running():
-        # Streamlit already has a loop — run in a new thread
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, coro).result()
-    else:
-        return asyncio.run(coro)
 
+GLOBAL_MODELS = {"gemini-3-pro-preview", "gemini-3-flash-preview"}
 
 @st.cache_resource
-def get_google_model():
-    """Initialise GoogleModel once (uses ADC / GOOGLE_PROJECT_ID env)."""
-    return GoogleModel()
+def get_google_model(location: str = "us-central1"):
+    """Initialise GoogleModel once per location."""
+    return GoogleModel(location=location)
+
+def _model_location(model_name: str) -> str:
+    """Gemini-3 preview models require the global endpoint."""
+    return "global" if model_name in GLOBAL_MODELS else "us-central1"
 
 
-def execute_structured_prompt(model_name, prompt_text, response_schema, temperature, max_tokens, thinking_budget=0):
+def execute_structured_prompt(model_name, prompt_text, response_schema, temperature, max_tokens):
     """Execute a structured prompt via google.genai. Returns (parsed_model, raw_text, latency_ms, token_count)."""
-    model = get_google_model()
+    model = get_google_model(_model_location(model_name))
     start = time.time()
     parsed = _run_async(model.generate_structured(
         prompt=prompt_text,
@@ -370,7 +405,6 @@ def execute_structured_prompt(model_name, prompt_text, response_schema, temperat
         model_name=model_name,
         temperature=float(temperature),
         max_output_tokens=int(max_tokens),
-        thinking_budget=thinking_budget,
     ))
     latency_ms = int((time.time() - start) * 1000)
 
@@ -382,16 +416,15 @@ def execute_structured_prompt(model_name, prompt_text, response_schema, temperat
     return parsed, raw_text, latency_ms, token_count
 
 
-def execute_text_prompt(model_name, prompt_text, temperature, max_tokens, thinking_budget=0):
+def execute_text_prompt(model_name, prompt_text, temperature, max_tokens):
     """Execute a plain text prompt via google.genai. Returns (raw_text, latency_ms, token_count)."""
-    model = get_google_model()
+    model = get_google_model(_model_location(model_name))
     start = time.time()
     raw_text = _run_async(model.generate_text(
         prompt=prompt_text,
         model_name=model_name,
         temperature=float(temperature),
         max_output_tokens=int(max_tokens),
-        thinking_budget=thinking_budget,
     ))
     latency_ms = int((time.time() - start) * 1000)
 
@@ -980,7 +1013,15 @@ def main():
 
         # Model config
         st.markdown("**Model Config**")
-        model_options = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"]
+        model_options = [
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-3-flash-preview",
+            "gemini-3-pro-preview",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+        ]
         model_name = st.selectbox("Model", model_options, key="wb_model")
         mc1, mc2 = st.columns(2)
         with mc1:
