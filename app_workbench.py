@@ -1224,7 +1224,7 @@ def _render_single_result(result_data, prompt_type, key_suffix=""):
     tokens = result_data.get("token_count", 0)
     model = result_data.get("model", "?")
 
-    st.caption(f"**{model}** · {latency}ms · {tokens} tokens")
+    st.caption(f"**{model}**")
 
     if raw.startswith("ERROR:"):
         st.error(raw)
@@ -1268,14 +1268,7 @@ def _render_single_result(result_data, prompt_type, key_suffix=""):
         # Response type - show as text
         st.success(raw)
 
-    # Rating
-    r1, r2 = st.columns(2)
-    with r1:
-        if st.button("+1", key=f"wb_res_up_{key_suffix}"):
-            _rate_latest_run(1)
-    with r2:
-        if st.button("-1", key=f"wb_res_down_{key_suffix}"):
-            _rate_latest_run(-1)
+    st.caption(f"{latency}ms · {tokens} tokens")
 
     note = st.text_input("Note", key=f"wb_res_note_{key_suffix}")
     if st.button("Save note", key=f"wb_res_nsave_{key_suffix}"):
