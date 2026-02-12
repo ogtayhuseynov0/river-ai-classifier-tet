@@ -90,10 +90,11 @@ class GoogleModel:
             resp = self.client.models.generate_content(
                 model=model_name, contents=prompt, config=final_cfg,
             )
-            return resp.text
+            tokens = getattr(resp.usage_metadata, "total_token_count", 0) or 0
+            return resp.text, tokens
         except Exception:
             self.logger.exception("generate_text failed.")
-            return None
+            return None, 0
 
     def generate_structured(
         self,
@@ -129,7 +130,8 @@ class GoogleModel:
             model=model_name, contents=full_prompt, config=final_cfg,
         )
         raw = _extract_json_from_text(resp.text)
-        return response_schema.model_validate_json(raw)
+        tokens = getattr(resp.usage_metadata, "total_token_count", 0) or 0
+        return response_schema.model_validate_json(raw), tokens
 
 
 # =============================================================================
@@ -360,7 +362,7 @@ results_db = get_results_db()
 GLOBAL_MODELS = {"gemini-3-pro-preview", "gemini-3-flash-preview"}
 
 @st.cache_resource
-def get_google_model(location: str = "us-central1", _v: int = 2):
+def get_google_model(location: str = "us-central1", _v: int = 3):
     """Initialise GoogleModel once per location."""
     return GoogleModel(location=location)
 
@@ -373,7 +375,7 @@ def execute_structured_prompt(model_name, prompt_text, response_schema, temperat
     """Execute a structured prompt via google.genai. Returns (parsed_model, raw_text, latency_ms, token_count)."""
     model = get_google_model(_model_location(model_name))
     start = time.time()
-    parsed = model.generate_structured(
+    parsed, token_count = model.generate_structured(
         prompt=prompt_text,
         response_schema=response_schema,
         model_name=model_name,
@@ -386,7 +388,6 @@ def execute_structured_prompt(model_name, prompt_text, response_schema, temperat
         raise Exception("generate_structured returned None - check logs")
 
     raw_text = parsed.model_dump_json(indent=2)
-    token_count = 0
     return parsed, raw_text, latency_ms, token_count
 
 
@@ -394,7 +395,7 @@ def execute_text_prompt(model_name, prompt_text, temperature, max_tokens):
     """Execute a plain text prompt via google.genai. Returns (raw_text, latency_ms, token_count)."""
     model = get_google_model(_model_location(model_name))
     start = time.time()
-    raw_text = model.generate_text(
+    raw_text, token_count = model.generate_text(
         prompt=prompt_text,
         model_name=model_name,
         temperature=float(temperature),
@@ -405,7 +406,6 @@ def execute_text_prompt(model_name, prompt_text, temperature, max_tokens):
     if raw_text is None:
         raise Exception("generate_text returned None - check logs")
 
-    token_count = 0
     return raw_text, latency_ms, token_count
 
 # =============================================================================
