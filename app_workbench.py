@@ -1224,6 +1224,8 @@ def _render_single_result(result_data, prompt_type, key_suffix=""):
     tokens = result_data.get("token_count", 0)
     model = result_data.get("model", "?")
 
+    st.caption(f"**{model}** · {latency}ms · {tokens} tokens")
+
     if raw.startswith("ERROR:"):
         st.error(raw)
         return
@@ -1265,15 +1267,6 @@ def _render_single_result(result_data, prompt_type, key_suffix=""):
     else:
         # Response type - show as text
         st.success(raw)
-
-    # Metrics
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.metric("Latency", f"{latency}ms")
-    with m2:
-        st.metric("Tokens", tokens)
-    with m3:
-        st.caption(f"Model: {model}")
 
     # Rating
     r1, r2 = st.columns(2)
