@@ -1268,7 +1268,7 @@ def _render_single_result(result_data, prompt_type, key_suffix=""):
         # Response type - show as text
         st.success(raw)
 
-    st.caption(f"{latency}ms · {tokens} tokens")
+    st.markdown(f"<span style='color:#888;font-size:14px;'>{latency}ms · {tokens} tokens</span>", unsafe_allow_html=True)
 
     note = st.text_input("Note", key=f"wb_res_note_{key_suffix}")
     if st.button("Save note", key=f"wb_res_nsave_{key_suffix}"):
